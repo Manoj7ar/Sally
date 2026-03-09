@@ -155,7 +155,7 @@ graph TD
     BROWSER -->|wait 1.5s| SHOT
 
     GEMINI -.->|Cloud Run backend| CR[Google Cloud Run]
-    GEMINI -.->|direct fallback| SDK[@google/genai SDK]
+    GEMINI -.->|direct fallback| SDK[google/genai SDK]
 ```
 
 ---
