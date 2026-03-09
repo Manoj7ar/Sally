@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --sally-blue: #3B82F6;
+    --sally-green: #22C55E;
+    --sally-yellow: #EAB308;
+    --sally-purple: #A855F7;
+    --sally-red: #EF4444;
+  }
+
+  :root {
+    --app-background: #1a1a2e;
+    --surface-bg: #16213e;
+    --surface-hover: #1a2745;
+    --text-primary: #ECECF0;
+    --text-secondary: #8a8a96;
+    --border-light: #2a3a5c;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply antialiased;
+    background-color: var(--app-background);
+    color: var(--text-primary);
+  }
+}
+
+@layer utilities {
+  .drag-region {
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+
+  .no-drag {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body.transparent-window {
+  background-color: transparent !important;
+}
+body.transparent-window #root {
+  background-color: transparent !important;
+}
+
+::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+button, .no-select {
+  user-select: none;
+}
