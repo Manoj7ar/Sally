@@ -135,78 +135,27 @@ This is exactly what the **Gemini Live Agent Challenge UI Navigator Track** call
 ## 5. High-Level Architecture Diagram
 
 ```mermaid
-flowchart LR
+graph TD
+    A[Right Alt + Microphone] -->|push-to-talk| B[Audio Recorder]
+    B -->|WebM audio| C[Gemini 2.5 Flash STT]
+    C --> D{Command Router}
 
-subgraph INPUT[Voice Input]
-direction TB
-KEY[Right Alt Key\nPush-to-Talk]
-MIC[Microphone]
-KEY --> REC[Audio Recorder]
-MIC --> REC
-end
+    D -->|describe| E[Desktop Screenshot]
+    D -->|action| SHOT
+    D -->|smart home| EXPAND[Expand Command] --> SHOT
 
-REC -->|WebM audio| GEMINI_STT
+    E --> GEMINI[Gemini 2.5 Flash Vision]
+    SHOT[Screenshot Browser Page] --> GEMINI
 
-subgraph GCLOUD[Google Cloud Platform]
-direction TB
-GEMINI_STT[Gemini 2.5 Flash\nSpeech to Text]
-CLOUDRUN[Google Cloud Run\nsally-backend\nExpress.js]
-GENAI[google/genai SDK]
-GEMINI_VISION[Gemini 2.5 Flash\nMultimodal Vision]
-CLOUDBUILD[Cloud Build +\nArtifact Registry]
-CLOUDRUN --> GENAI
-GENAI --> GEMINI_VISION
-CLOUDBUILD --> CLOUDRUN
-end
+    GEMINI --> TTS[ElevenLabs TTS → Speaker]
+    GEMINI --> CHECK{Action?}
+    CHECK -->|No — task done| IDLE[Back to Idle]
+    CHECK -->|Yes| EXEC[Playwright: Execute Action]
+    EXEC --> BROWSER[Chrome / Edge]
+    BROWSER -->|wait 1.5s| SHOT
 
-GEMINI_STT -->|transcript| ROUTER
-
-subgraph SALLY[Sally Desktop App - Electron]
-direction TB
-ROUTER{Command\nRouter}
-ROUTER -->|describe| SINGLE[Single Vision Call]
-ROUTER -->|action| LOOP
-ROUTER -->|smart home| EXPAND[Expand Command\nlights on then\nhome.google.com]
-EXPAND --> LOOP
-
-subgraph LOOP[Agentic Loop - 15 iterations max]
-direction TB
-L1[Screenshot Page] --> L2[Get URL + Title\nGrounding]
-L2 --> L3[Send to Gemini\n+ Action History\n+ Page Info]
-L3 --> L4[Parse Response\nnarration + action]
-L4 --> L5[Narrate via TTS]
-L5 --> L6{Task\nComplete?}
-L6 -->|No| L7[Execute Action\n5-Level Selector Fallback]
-L7 --> L8[Save to Memory]
-L8 --> L1
-L6 -->|Yes| L9[Done]
-end
-end
-
-L3 -->|screenshot + instruction| CLOUDRUN
-GEMINI_VISION -->|JSON response| L4
-L3 -->|direct fallback| GENAI
-
-L7 --> PW[Playwright\nplaywright-core]
-
-subgraph BROWSER[Chrome Browser]
-direction LR
-PAGE[Any Website\nLogged-in Profile\nCookies Preserved]
-HOME[home.google.com\nSmart Home Controls]
-end
-
-PW <--> PAGE
-PW <--> HOME
-
-L5 --> TTS[ElevenLabs\nNeural TTS]
-SINGLE --> TTS
-TTS --> SPEAKER[Speaker Output]
-
-style GCLOUD fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px,color:#000
-style SALLY fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#000
-style LOOP fill:#FFF8E1,stroke:#F9A825,stroke-width:2px,color:#000
-style INPUT fill:#E0F7FA,stroke:#00838F,stroke-width:2px,color:#000
-style BROWSER fill:#FFF3E0,stroke:#EF6C00,stroke-width:2px,color:#000
+    GEMINI -.->|Cloud Run backend| CR[Google Cloud Run]
+    GEMINI -.->|direct fallback| SDK[@google/genai SDK]
 ```
 
 ---
