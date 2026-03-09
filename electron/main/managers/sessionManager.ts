@@ -63,7 +63,8 @@ const SMART_HOME_PATTERNS: Array<{ pattern: RegExp; rewrite: (match: RegExpMatch
 
 const MAX_ITERATIONS = 15;
 const MAX_DURATION_MS = 3 * 60 * 1000; // 3 minutes
-const SETTLE_DELAY_MS = 1500;
+const SETTLE_DELAY_MIN_MS = 800;
+const SETTLE_DELAY_MAX_MS = 3000;
 
 class SessionManager {
   private state: SallyState = 'idle';
@@ -211,18 +212,45 @@ class SessionManager {
 
         console.log(`[SessionManager] Agentic loop iteration ${i + 1}/${MAX_ITERATIONS}`);
 
-        // Take screenshot and get page info for grounding
-        const screenshot = await playwrightService.takeScreenshot();
-        const pageInfo = await playwrightService.getPageInfo();
+        // Take screenshot and get page info for grounding (with timeout guard)
+        let screenshot: string;
+        let pageInfo: { url: string; title: string };
+        try {
+          [screenshot, pageInfo] = await Promise.all([
+            Promise.race([
+              playwrightService.takeScreenshot(),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Screenshot timeout')), 15_000)),
+            ]),
+            Promise.race([
+              playwrightService.getPageInfo(),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('PageInfo timeout')), 15_000)),
+            ]),
+          ]);
+        } catch (e) {
+          console.error('[SessionManager] Screenshot/pageInfo timed out:', e);
+          history.push('FAILED: Could not capture screen (page unresponsive)');
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
 
         // Send to Gemini for interpretation (with grounding + action history)
-        const result = await geminiService.interpretScreen({
-          screenshot,
-          instruction,
-          history,
-          pageUrl: pageInfo.url,
-          pageTitle: pageInfo.title,
-        });
+        let result: import('../services/geminiService.js').GeminiInterpretResult;
+        try {
+          result = await Promise.race([
+            geminiService.interpretScreen({
+              screenshot,
+              instruction,
+              history,
+              pageUrl: pageInfo.url,
+              pageTitle: pageInfo.title,
+            }),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Gemini timeout')), 30_000)),
+          ]);
+        } catch (e) {
+          console.error('[SessionManager] Gemini call failed:', e);
+          history.push('FAILED: Gemini error — retrying with fresh screenshot');
+          continue;
+        }
         console.log('[SessionManager] Gemini result:', result.narration, result.action);
 
         // Broadcast to UI
@@ -249,9 +277,11 @@ class SessionManager {
         const actionResult = await playwrightService.executeAction(result.action);
         console.log('[SessionManager] Action result:', actionResult);
 
-        // Add to history so Gemini knows what's already been done
+        // Include success/failure status so Gemini can adapt
+        const SUCCESS_PREFIXES = ['Navigated to', 'Clicked', 'Typed', 'Selected', 'Pressed', 'Hovered', 'Scrolled', 'Went back', 'Waited'];
+        const succeeded = SUCCESS_PREFIXES.some(p => actionResult.startsWith(p));
         const actionDesc = this.describeAction(result.action, actionResult);
-        history.push(actionDesc);
+        history.push(succeeded ? actionDesc : `FAILED: ${actionDesc}`);
         if (history.length > 10) history.shift();
 
         windowManager.broadcastToAll('sally:step', {
@@ -260,16 +290,38 @@ class SessionManager {
           timestamp: Date.now(),
         });
 
-        // Wait for page to settle
-        await new Promise(resolve => setTimeout(resolve, SETTLE_DELAY_MS));
+        // Smart page settle: wait for network idle, with min/max bounds
+        await this.waitForSettle(result.action.type);
       }
     } catch (error) {
       console.error('[SessionManager] Agentic browse failed:', error);
+      ttsService.stop();
       ttsService.speakImmediate("Hmm, something went wrong. Let me know if you'd like to try again.");
     } finally {
       if (!this.isCancelled) {
         this.setState('idle');
       }
+    }
+  }
+
+  // Wait for the page to settle after an action. Navigate/click get longer waits,
+  // keyboard actions get shorter ones. Uses network idle when possible.
+  private async waitForSettle(actionType: string): Promise<void> {
+    const needsLongerWait = ['navigate', 'click', 'back', 'select'].includes(actionType);
+
+    if (needsLongerWait) {
+      try {
+        // Wait for network to go idle (no requests for 500ms), but cap it
+        const page = await playwrightService.launch();
+        await page.waitForLoadState('networkidle', { timeout: SETTLE_DELAY_MAX_MS });
+      } catch {
+        // Timeout is fine, just means the page has ongoing requests (analytics, websockets, etc.)
+      }
+      // Always wait at least the minimum so rendering can finish
+      await new Promise(resolve => setTimeout(resolve, SETTLE_DELAY_MIN_MS));
+    } else {
+      // For keyboard/scroll/hover actions, a short wait is enough
+      await new Promise(resolve => setTimeout(resolve, SETTLE_DELAY_MIN_MS));
     }
   }
 

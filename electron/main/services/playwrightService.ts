@@ -2,10 +2,11 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { chromium, type BrowserContext, type Page } from 'playwright-core';
+import { chromium, type BrowserContext, type Page, type Locator } from 'playwright-core';
 import type { GeminiAction } from './geminiService.js';
 
 const ACTION_TIMEOUT_MS = 10_000;
+const MAX_SELECTOR_LENGTH = 500;
 
 // Browser executable paths (Windows) — Chrome first, Edge as fallback
 const BROWSER_PATHS = [
@@ -128,7 +129,7 @@ class PlaywrightService {
 
   async takeScreenshot(): Promise<string> {
     const page = await this.launch();
-    const buffer = await page.screenshot({ type: 'png', fullPage: false });
+    const buffer = await page.screenshot({ type: 'png', fullPage: false, timeout: 10_000 });
     return buffer.toString('base64');
   }
 
@@ -144,6 +145,9 @@ class PlaywrightService {
             url = 'https://' + url;
           }
           await page.goto(url, { timeout: ACTION_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
+          try {
+            await page.waitForLoadState('networkidle', { timeout: 5000 });
+          } catch { /* page has ongoing requests, that's fine */ }
           return `Navigated to ${url}`;
         }
 
@@ -161,12 +165,8 @@ class PlaywrightService {
 
         case 'select': {
           if (!action.selector || !action.value) return 'Missing selector or value';
-          try {
-            await page.selectOption(action.selector, action.value, { timeout: ACTION_TIMEOUT_MS });
-            return `Selected "${action.value}" in "${action.selector}"`;
-          } catch {
-            return `Could not select in "${action.selector}"`;
-          }
+          const selected = await this.smartSelect(page, action.selector, action.value);
+          return selected ? `Selected "${action.value}" in "${action.selector}"` : `Could not select in "${action.selector}"`;
         }
 
         case 'press': {
@@ -189,7 +189,14 @@ class PlaywrightService {
         }
 
         case 'back': {
-          await page.goBack({ timeout: ACTION_TIMEOUT_MS });
+          const beforeUrl = page.url();
+          try {
+            await page.goBack({ timeout: ACTION_TIMEOUT_MS });
+          } catch { /* timeout is fine */ }
+          const afterUrl = page.url();
+          if (afterUrl === beforeUrl || !afterUrl || afterUrl === 'about:blank') {
+            return 'Cannot go back, no previous page';
+          }
           return 'Went back to previous page';
         }
 
@@ -219,40 +226,79 @@ class PlaywrightService {
     }
   }
 
-  private async smartClick(page: Page, selector: string): Promise<boolean> {
-    try {
-      await page.click(selector, { timeout: 3000 });
-      return true;
-    } catch { /* fallback */ }
-
-    try {
-      await page.getByText(selector, { exact: false }).first().click({ timeout: 3000 });
-      return true;
-    } catch { /* fallback */ }
-
-    for (const role of ['button', 'link', 'menuitem', 'tab', 'checkbox'] as const) {
+  // Try to click the first visible matching element, filtering out hidden/off-screen ones
+  private async clickVisible(locator: Locator): Promise<boolean> {
+    const count = await locator.count();
+    for (let i = 0; i < count && i < 5; i++) {
+      const el = locator.nth(i);
       try {
-        await page.getByRole(role, { name: selector }).first().click({ timeout: 2000 });
+        if (!(await el.isVisible({ timeout: 500 }))) continue;
+        if (await el.isDisabled().catch(() => false)) continue;
+        const ariaDisabled = await el.getAttribute('aria-disabled').catch(() => null);
+        if (ariaDisabled === 'true') continue;
+        await el.click({ timeout: 3000 });
         return true;
+      } catch { /* try next */ }
+    }
+    return false;
+  }
+
+  private async smartClick(page: Page, selector: string): Promise<boolean> {
+    if (selector.length > MAX_SELECTOR_LENGTH) selector = selector.slice(0, MAX_SELECTOR_LENGTH);
+    // 1. CSS selector (also pierces shadow DOM via locator)
+    try {
+      await page.locator(selector).first().click({ timeout: 3000 });
+      return true;
+    } catch { /* fallback */ }
+
+    // 2. Visible text — pick the first visible match, not just first in DOM
+    try {
+      if (await this.clickVisible(page.getByText(selector, { exact: false }))) return true;
+    } catch { /* fallback */ }
+
+    // 3. ARIA roles — check visibility before clicking
+    for (const role of ['button', 'link', 'menuitem', 'tab', 'checkbox', 'option', 'combobox'] as const) {
+      try {
+        if (await this.clickVisible(page.getByRole(role, { name: selector }))) return true;
       } catch { /* next */ }
     }
 
+    // 4. ARIA label
     try {
-      await page.getByLabel(selector).first().click({ timeout: 2000 });
-      return true;
+      if (await this.clickVisible(page.getByLabel(selector))) return true;
     } catch { /* fallback */ }
 
+    // 5. Placeholder
     try {
-      await page.getByPlaceholder(selector).first().click({ timeout: 2000 });
-      return true;
-    } catch { /* give up */ }
+      if (await this.clickVisible(page.getByPlaceholder(selector))) return true;
+    } catch { /* fallback */ }
+
+    // 6. Title attribute
+    try {
+      if (await this.clickVisible(page.getByTitle(selector))) return true;
+    } catch { /* fallback */ }
+
+    // 7. Alt text (images)
+    try {
+      if (await this.clickVisible(page.getByAltText(selector))) return true;
+    } catch { /* fallback */ }
+
+    // 8. Shadow-piercing text locator
+    try {
+      const shadow = page.locator(`text="${selector}"`);
+      if (await this.clickVisible(shadow)) return true;
+    } catch { /* fallback */ }
+
+    // 9. Try inside iframes
+    if (await this.clickInFrames(page, selector)) return true;
 
     return false;
   }
 
   private async smartHover(page: Page, selector: string): Promise<boolean> {
+    if (selector.length > MAX_SELECTOR_LENGTH) selector = selector.slice(0, MAX_SELECTOR_LENGTH);
     try {
-      await page.hover(selector, { timeout: 3000 });
+      await page.locator(selector).first().hover({ timeout: 3000 });
       return true;
     } catch { /* fallback */ }
 
@@ -268,35 +314,186 @@ class PlaywrightService {
       } catch { /* next */ }
     }
 
+    try {
+      await page.getByTitle(selector).first().hover({ timeout: 2000 });
+      return true;
+    } catch { /* fallback */ }
+
     return false;
   }
 
   private async smartFill(page: Page, selector: string, value: string): Promise<boolean> {
+    if (selector.length > MAX_SELECTOR_LENGTH) selector = selector.slice(0, MAX_SELECTOR_LENGTH);
+    // 1. CSS selector
     try {
       await page.fill(selector, value, { timeout: 3000 });
       return true;
     } catch { /* fallback */ }
 
+    // 2. Label
     try {
       await page.getByLabel(selector).first().fill(value, { timeout: 3000 });
       return true;
     } catch { /* fallback */ }
 
+    // 3. Placeholder
     try {
       await page.getByPlaceholder(selector).first().fill(value, { timeout: 3000 });
       return true;
     } catch { /* fallback */ }
 
+    // 4. Textbox role
     try {
       await page.getByRole('textbox', { name: selector }).first().fill(value, { timeout: 2000 });
       return true;
     } catch { /* fallback */ }
 
+    // 5. Searchbox role
+    try {
+      await page.getByRole('searchbox', { name: selector }).first().fill(value, { timeout: 2000 });
+      return true;
+    } catch { /* fallback */ }
+
+    // 6. Generic searchbox (no name filter)
     try {
       await page.getByRole('searchbox').first().fill(value, { timeout: 2000 });
       return true;
+    } catch { /* fallback */ }
+
+    // 7. Combobox role (common for modern search inputs)
+    try {
+      await page.getByRole('combobox', { name: selector }).first().fill(value, { timeout: 2000 });
+      return true;
+    } catch { /* fallback */ }
+
+    // 8. Generic combobox
+    try {
+      await page.getByRole('combobox').first().fill(value, { timeout: 2000 });
+      return true;
+    } catch { /* fallback */ }
+
+    // 9. Try inside iframes
+    if (await this.fillInFrames(page, selector, value)) return true;
+
+    return false;
+  }
+
+  // Handle both native <select> and custom dropdowns
+  private async smartSelect(page: Page, selector: string, value: string): Promise<boolean> {
+    if (selector.length > MAX_SELECTOR_LENGTH) selector = selector.slice(0, MAX_SELECTOR_LENGTH);
+    // 1. Native <select> by CSS
+    try {
+      await page.selectOption(selector, value, { timeout: 3000 });
+      return true;
+    } catch { /* fallback */ }
+
+    // 2. Native <select> by label
+    try {
+      await page.getByLabel(selector).first().selectOption(value, { timeout: 3000 });
+      return true;
+    } catch { /* fallback */ }
+
+    // 3. Native <select> by role
+    try {
+      await page.getByRole('combobox', { name: selector }).first().selectOption(value, { timeout: 3000 });
+      return true;
+    } catch { /* fallback */ }
+
+    // 4. Custom dropdown: click to open, then click option by text
+    try {
+      const opened = await this.smartClick(page, selector);
+      if (opened) {
+        try {
+          await page.waitForSelector('[role="listbox"], [role="menu"], [role="option"]', { timeout: 2000 });
+        } catch {
+          await page.waitForTimeout(800);
+        }
+        // Try clicking the option in listbox/menu
+        for (const role of ['option', 'menuitem', 'listitem'] as const) {
+          try {
+            if (await this.clickVisible(page.getByRole(role, { name: value }))) return true;
+          } catch { /* next */ }
+        }
+        // Fall back to clicking by text
+        try {
+          if (await this.clickVisible(page.getByText(value, { exact: false }))) return true;
+        } catch { /* give up */ }
+      }
     } catch { /* give up */ }
 
+    return false;
+  }
+
+  // Try to click an element inside any iframe on the page
+  private async clickInFrames(page: Page, selector: string): Promise<boolean> {
+    const frames = page.frames();
+    for (const frame of frames) {
+      if (frame === page.mainFrame()) continue;
+      try {
+        // Text match
+        const el = frame.getByText(selector, { exact: false }).first();
+        if (await el.isVisible({ timeout: 500 })) {
+          await el.click({ timeout: 3000 });
+          return true;
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : '';
+        if (msg.includes('cross-origin') || msg.includes('denied')) {
+          console.warn('[Playwright] Cross-origin iframe skipped in clickInFrames (text):', msg);
+        }
+      }
+      try {
+        // Role match
+        for (const role of ['button', 'link'] as const) {
+          const el = frame.getByRole(role, { name: selector }).first();
+          if (await el.isVisible({ timeout: 500 })) {
+            await el.click({ timeout: 3000 });
+            return true;
+          }
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : '';
+        if (msg.includes('cross-origin') || msg.includes('denied')) {
+          console.warn('[Playwright] Cross-origin iframe skipped in clickInFrames (role):', msg);
+        }
+      }
+    }
+    return false;
+  }
+
+  // Try to fill a field inside any iframe on the page
+  private async fillInFrames(page: Page, selector: string, value: string): Promise<boolean> {
+    const frames = page.frames();
+    for (const frame of frames) {
+      if (frame === page.mainFrame()) continue;
+      try {
+        await frame.getByLabel(selector).first().fill(value, { timeout: 2000 });
+        return true;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : '';
+        if (msg.includes('cross-origin') || msg.includes('denied')) {
+          console.warn('[Playwright] Cross-origin iframe skipped in fillInFrames (label):', msg);
+        }
+      }
+      try {
+        await frame.getByPlaceholder(selector).first().fill(value, { timeout: 2000 });
+        return true;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : '';
+        if (msg.includes('cross-origin') || msg.includes('denied')) {
+          console.warn('[Playwright] Cross-origin iframe skipped in fillInFrames (placeholder):', msg);
+        }
+      }
+      try {
+        await frame.getByRole('textbox', { name: selector }).first().fill(value, { timeout: 2000 });
+        return true;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : '';
+        if (msg.includes('cross-origin') || msg.includes('denied')) {
+          console.warn('[Playwright] Cross-origin iframe skipped in fillInFrames (role):', msg);
+        }
+      }
+    }
     return false;
   }
 

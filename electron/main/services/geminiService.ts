@@ -57,11 +57,23 @@ Action types you can return:
 Rules:
 - Return exactly ONE action per response — the loop will call you again after executing it
 - Never mention coordinates, pixel positions, or technical selectors to the user
-- For selectors: prefer visible text content, button labels, aria-labels, and placeholder text over CSS selectors
 - Keep narration short and natural — it will be read aloud via text-to-speech
 - If you need to search on Google, navigate to google.com first, then fill the search box, then press Enter
 - If a page just loaded, describe what you see and give the next action
-- When the task is done, say so clearly and warmly, and set action to null`;
+- When the task is done, say so clearly and warmly, and set action to null
+
+Selector strategy (IMPORTANT — follow this for reliable automation):
+- Use the exact visible text on the button or link (e.g., "Add to Cart", "Sign in", "Search")
+- If the text isn't unique, add context like the aria-label (e.g., "Add to Cart" near a specific product)
+- For input fields, use the placeholder text (e.g., "Search", "Email address") or the label text
+- AVOID complex CSS selectors — they break across sites. Simple visible text works best.
+- For custom dropdowns that aren't native <select> elements, click the dropdown to open it first, then click the option text in the next step
+
+Error recovery:
+- If a previous step is marked FAILED in the history, try a different selector or approach — do NOT retry the same selector
+- If clicking by text failed, try using the aria-label or a nearby landmark instead
+- If filling a field failed, try clicking the field first, then use "type" action on the next step
+- If multiple attempts fail on the same element, skip it and narrate honestly to the user`;
 
 class GeminiService {
   private backendCooldownUntil = 0;
@@ -120,7 +132,19 @@ class GeminiService {
       throw new Error(`Gemini backend error: ${response.status} ${errorText}`);
     }
 
-    return response.json() as Promise<GeminiInterpretResult>;
+    const raw = await response.json() as Record<string, unknown>;
+    const narration = typeof raw.narration === 'string' && raw.narration ? raw.narration : 'I can see the screen.';
+    let action: GeminiAction | null = null;
+    if (raw.action && typeof raw.action === 'object' && !Array.isArray(raw.action)) {
+      const a = raw.action as Record<string, unknown>;
+      if (typeof a.type === 'string') {
+        action = { type: a.type } as GeminiAction;
+        if (typeof a.selector === 'string') action.selector = a.selector;
+        if (typeof a.value === 'string') action.value = a.value;
+        if (typeof a.url === 'string') action.url = a.url;
+      }
+    }
+    return { narration, action };
   }
 
   private getDirectClient(apiKey: string): GoogleGenAI {
@@ -142,7 +166,7 @@ class GeminiService {
       : '';
 
     const historyBlock = params.history && params.history.length > 0
-      ? `\n\nSteps already completed:\n${params.history.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\nDo NOT repeat these steps. Decide what to do NEXT.`
+      ? `\n\nSteps already completed:\n${params.history.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\nDo NOT repeat these steps. If any step is marked FAILED, try a different selector or approach. Decide what to do NEXT.`
       : '';
 
     const userPrompt = `User instruction: "${params.instruction}"${groundingBlock}${historyBlock}
@@ -185,24 +209,60 @@ Return exactly ONE action — the next step toward the goal. You will be called 
       },
     });
 
-    const text = result.text || '';
-    let parsed: Partial<GeminiInterpretResult> & { action?: GeminiAction | null };
+    const VALID_ACTION_TYPES = new Set([
+      'navigate', 'click', 'fill', 'type', 'select', 'press',
+      'hover', 'scroll', 'scroll_up', 'back', 'wait', 'null',
+    ]);
 
+    const text = result.text || '';
+    let parsed: Record<string, unknown> | null = null;
+
+    // Step 1: Try JSON.parse directly
     try {
       parsed = JSON.parse(text);
-    } catch {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        parsed = JSON.parse(jsonMatch[0]) as Partial<GeminiInterpretResult> & { action?: GeminiAction | null };
-      } else {
-        parsed = { narration: text, action: null };
+    } catch { /* fallback */ }
+
+    // Step 2: Strip markdown fences and try again
+    if (!parsed) {
+      const stripped = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+      try {
+        parsed = JSON.parse(stripped);
+      } catch { /* fallback */ }
+    }
+
+    // Step 3: Find first '{' and try parsing from there to each '}' from right to left
+    if (!parsed) {
+      const firstBrace = text.indexOf('{');
+      if (firstBrace !== -1) {
+        for (let end = text.lastIndexOf('}'); end > firstBrace; end = text.lastIndexOf('}', end - 1)) {
+          try {
+            parsed = JSON.parse(text.slice(firstBrace, end + 1));
+            break;
+          } catch { /* try shorter */ }
+        }
       }
     }
 
-    return {
-      narration: parsed.narration || 'I can see the screen.',
-      action: parsed.action || null,
-    };
+    // Step 4: Last resort — treat first 200 chars as narration
+    if (!parsed) {
+      parsed = { narration: text.slice(0, 200) || 'I can see the screen.', action: null };
+    }
+
+    // Validate narration
+    const narration = typeof parsed.narration === 'string' && parsed.narration
+      ? parsed.narration
+      : 'I can see the screen.';
+
+    // Validate action type
+    let action: GeminiAction | null = null;
+    if (parsed.action && typeof parsed.action === 'object' && !Array.isArray(parsed.action)) {
+      const rawAction = parsed.action as Record<string, unknown>;
+      if (typeof rawAction.type === 'string' && VALID_ACTION_TYPES.has(rawAction.type)) {
+        action = rawAction as unknown as GeminiAction;
+      }
+    }
+
+    return { narration, action };
   }
 }
 

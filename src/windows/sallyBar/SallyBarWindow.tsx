@@ -111,11 +111,15 @@ export default function SallyBarWindow() {
     }
   }, [isComposerOpen, isTranscriptVisible, state, syncLayout]);
 
-  // Store sound functions in refs so the subscription effect can access them
-  const soundsRef = useRef({ playCompleteChime, playErrorChime });
+  // Store sound functions in refs so the subscription effect can access them.
+  // Initialized with no-ops because the useCallback declarations come later in the
+  // function body. The useEffect below updates the ref after every render (no deps
+  // array) so it runs after all variables are declared, avoiding the TDZ crash.
+  const soundsRef = useRef<{ playCompleteChime: () => void; playErrorChime: () => void }>({ playCompleteChime: () => {}, playErrorChime: () => {} });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     soundsRef.current = { playCompleteChime, playErrorChime };
-  }, [playCompleteChime, playErrorChime]);
+  });
 
   useEffect(() => {
     let prevState: SallyState = 'idle';
