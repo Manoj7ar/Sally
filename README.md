@@ -56,6 +56,32 @@ This means Sally can handle multi-step tasks like "go to google.com and search f
 5. **Sally speaks** — ElevenLabs neural TTS narrates every action and result
 6. **Loop continues** — Take new screenshot, ask Gemini again, until task is done
 
+## Architecture
+
+```mermaid
+graph TD
+    A[Right Alt + Microphone] -->|push-to-talk| B[Audio Recorder]
+    B -->|WebM audio| C[Gemini 2.5 Flash STT]
+    C --> D{Command Router}
+
+    D -->|describe| E[Desktop Screenshot]
+    D -->|action| SHOT
+    D -->|smart home| EXPAND[Expand Command] --> SHOT
+
+    E --> GEMINI[Gemini 2.5 Flash Vision]
+    SHOT[Screenshot Browser Page] --> GEMINI
+
+    GEMINI --> TTS[ElevenLabs TTS → Speaker]
+    GEMINI --> CHECK{Action?}
+    CHECK -->|No — task done| IDLE[Back to Idle]
+    CHECK -->|Yes| EXEC[Playwright: Execute Action]
+    EXEC --> BROWSER[Chrome / Edge]
+    BROWSER -->|wait 1.5s| SHOT
+
+    GEMINI -.->|Cloud Run backend| CR[Google Cloud Run]
+    GEMINI -.->|direct fallback| SDK[google/genai SDK]
+```
+
 ## Google Cloud Architecture
 
 | Component | Service | Purpose |
