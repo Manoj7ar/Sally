@@ -69,36 +69,114 @@ const SETTLE_DELAY_MAX_MS = 3000;
 class SessionManager {
   private state: SallyState = 'idle';
   private isCancelled = false;
+  private runGeneration = 0;
   private waitTimeout: NodeJS.Timeout | null = null;
 
   initialize(): void {
     console.log('[SessionManager] Initialized (Playwright + Gemini agentic mode)');
   }
 
+  private clearWaitTimeout(): void {
+    if (this.waitTimeout) {
+      clearTimeout(this.waitTimeout);
+      this.waitTimeout = null;
+    }
+  }
+
+  private startRun(): number {
+    this.runGeneration += 1;
+    this.isCancelled = false;
+    this.clearWaitTimeout();
+    return this.runGeneration;
+  }
+
+  private invalidateRun(): number {
+    this.runGeneration += 1;
+    this.isCancelled = true;
+    this.clearWaitTimeout();
+    return this.runGeneration;
+  }
+
+  private isRunCurrent(runId: number): boolean {
+    return runId === this.runGeneration && !this.isCancelled;
+  }
+
+  private isBusyState(): boolean {
+    return this.state === 'processing'
+      || this.state === 'acting'
+      || this.state === 'speaking'
+      || this.state === 'awaiting_response';
+  }
+
+  beginListeningFromHotkey(): void {
+    if (this.isBusyState()) {
+      this.invalidateRun();
+    } else {
+      this.clearWaitTimeout();
+    }
+
+    ttsService.stop();
+    windowManager.setBorderOverlayTargetToCursor();
+    this.setState('listening');
+  }
+
+  private async syncOverlayTargetFromBrowser(runId: number): Promise<void> {
+    if (!this.isRunCurrent(runId)) return;
+
+    const bounds = await playwrightService.getBrowserWindowBounds().catch((error) => {
+      console.warn('[SessionManager] Failed to sync browser display target:', error);
+      return null;
+    });
+
+    if (!this.isRunCurrent(runId)) return;
+    windowManager.setBorderOverlayTargetByBounds(bounds);
+  }
+
   async handleTranscription(audioBase64: string, mimeType: string): Promise<string> {
+    const runId = this.startRun();
     this.setState('processing');
 
     try {
+      if (!this.isRunCurrent(runId)) {
+        return '';
+      }
+
       if (!apiKeyManager.hasGeminiApiKey() && !apiKeyManager.hasWhisperKey()) {
+        if (!this.isRunCurrent(runId)) {
+          return '';
+        }
         ttsService.speakImmediate('Please configure a Gemini API key or OpenAI Whisper key in settings for speech transcription.');
-        this.setState('idle');
+        if (this.isRunCurrent(runId)) {
+          this.setState('idle');
+        }
         return '';
       }
 
       const text = await whisperService.transcribe(audioBase64, mimeType);
+      if (!this.isRunCurrent(runId)) {
+        return '';
+      }
       console.log('[SessionManager] Transcribed:', text);
 
       if (!text.trim()) {
-        this.setState('idle');
+        if (this.isRunCurrent(runId)) {
+          this.setState('idle');
+        }
         return '';
       }
 
       if (text.toLowerCase().trim().includes('cancel')) {
+        if (!this.isRunCurrent(runId)) {
+          return text;
+        }
         await this.cancel();
         return text;
       }
 
-      this.executeTask(text).catch((error) => {
+      this.executeTaskForRun(text, runId).catch((error) => {
+        if (!this.isRunCurrent(runId)) {
+          return;
+        }
         console.error('[SessionManager] Task execution failed:', error);
         ttsService.speakImmediate('Something went wrong. Please try again.');
         this.setState('idle');
@@ -106,6 +184,9 @@ class SessionManager {
 
       return text;
     } catch (error) {
+      if (!this.isRunCurrent(runId)) {
+        return '';
+      }
       console.error('[SessionManager] Transcription failed:', error);
       ttsService.speakImmediate("I couldn't understand that, please try again.");
       this.setState('idle');
@@ -114,11 +195,19 @@ class SessionManager {
   }
 
   async executeTask(text: string): Promise<void> {
+    ttsService.stop();
+    const runId = this.startRun();
+    await this.executeTaskForRun(text, runId);
+  }
+
+  private async executeTaskForRun(text: string, runId: number): Promise<void> {
+    if (!this.isRunCurrent(runId)) return;
+
     const normalizedText = text.toLowerCase().trim();
     const isDescribeCommand = DESCRIBE_COMMANDS.some(cmd => normalizedText.includes(cmd));
 
     if (isDescribeCommand) {
-      await this.describeScreen();
+      await this.describeScreen(runId);
       return;
     }
 
@@ -128,7 +217,7 @@ class SessionManager {
       console.log('[SessionManager] Smart command expanded:', text, '→', expanded);
     }
 
-    await this.agenticBrowse(expanded);
+    await this.agenticBrowse(expanded, runId);
   }
 
   private expandSmartCommand(text: string): string {
@@ -159,46 +248,59 @@ class SessionManager {
     }
   }
 
-  async describeScreen(): Promise<void> {
+  async describeScreen(runId: number): Promise<void> {
+    if (!this.isRunCurrent(runId)) return;
     this.setState('acting');
     try {
+      if (!this.isRunCurrent(runId)) return;
       ttsService.speakImmediate('Let me take a look...');
       const screenshot = await screenshotService.captureScreen();
+      if (!this.isRunCurrent(runId)) return;
       const result = await geminiService.interpretScreen({
         screenshot,
         instruction: 'Describe what you see on this screen. Mention the main content, page title, key buttons or links, and what actions are available. Keep it under 3 sentences, spoken naturally.',
       });
+      if (!this.isRunCurrent(runId)) return;
       ttsService.speak(result.narration);
     } catch (error) {
+      if (!this.isRunCurrent(runId)) return;
       console.error('[SessionManager] describeScreen failed:', error);
       ttsService.speakImmediate("Sorry, I couldn't see the screen right now. Check your Gemini API key in settings.");
     } finally {
-      this.setState('idle');
+      if (this.isRunCurrent(runId)) {
+        this.setState('idle');
+      }
     }
   }
 
-  private async agenticBrowse(instruction: string): Promise<void> {
+  private async agenticBrowse(instruction: string, runId: number): Promise<void> {
+    if (!this.isRunCurrent(runId)) return;
+
     if (!apiKeyManager.hasGeminiApiKey() && !apiKeyManager.hasGeminiBackendUrl()) {
+      if (!this.isRunCurrent(runId)) return;
       ttsService.speakImmediate("I need Gemini vision configured to browse. Add a Gemini API key or Sally Vision Backend URL in settings.");
-      this.setState('idle');
+      if (this.isRunCurrent(runId)) {
+        this.setState('idle');
+      }
       return;
     }
 
     this.setState('acting');
-    this.isCancelled = false;
 
     const startTime = Date.now();
     const history: string[] = [];
 
     try {
+      if (!this.isRunCurrent(runId)) return;
       ttsService.speakImmediate("On it! Let me handle that for you.");
 
       // Ensure browser is launched
       await playwrightService.launch();
+      await this.syncOverlayTargetFromBrowser(runId);
 
       for (let i = 0; i < MAX_ITERATIONS; i++) {
         // Check cancellation
-        if (this.isCancelled) {
+        if (!this.isRunCurrent(runId)) {
           console.log('[SessionManager] Agentic loop cancelled at iteration', i);
           return;
         }
@@ -211,6 +313,8 @@ class SessionManager {
         }
 
         console.log(`[SessionManager] Agentic loop iteration ${i + 1}/${MAX_ITERATIONS}`);
+        await this.syncOverlayTargetFromBrowser(runId);
+        if (!this.isRunCurrent(runId)) return;
 
         // Take screenshot and get page info for grounding (with timeout guard)
         let screenshot: string;
@@ -227,6 +331,7 @@ class SessionManager {
             ]),
           ]);
         } catch (e) {
+          if (!this.isRunCurrent(runId)) return;
           console.error('[SessionManager] Screenshot/pageInfo timed out:', e);
           history.push('FAILED: Could not capture screen (page unresponsive)');
           await new Promise(resolve => setTimeout(resolve, 2000));
@@ -247,10 +352,12 @@ class SessionManager {
             new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Gemini timeout')), 30_000)),
           ]);
         } catch (e) {
+          if (!this.isRunCurrent(runId)) return;
           console.error('[SessionManager] Gemini call failed:', e);
           history.push('FAILED: Gemini error — retrying with fresh screenshot');
           continue;
         }
+        if (!this.isRunCurrent(runId)) return;
         console.log('[SessionManager] Gemini result:', result.narration, result.action);
 
         // Broadcast to UI
@@ -271,10 +378,11 @@ class SessionManager {
         }
 
         // Check cancellation before executing
-        if (this.isCancelled) return;
+        if (!this.isRunCurrent(runId)) return;
 
         // Execute the action
         const actionResult = await playwrightService.executeAction(result.action);
+        if (!this.isRunCurrent(runId)) return;
         console.log('[SessionManager] Action result:', actionResult);
 
         // Include success/failure status so Gemini can adapt
@@ -291,14 +399,15 @@ class SessionManager {
         });
 
         // Smart page settle: wait for network idle, with min/max bounds
-        await this.waitForSettle(result.action.type);
+        await this.waitForSettle(result.action.type, runId);
       }
     } catch (error) {
+      if (!this.isRunCurrent(runId)) return;
       console.error('[SessionManager] Agentic browse failed:', error);
       ttsService.stop();
       ttsService.speakImmediate("Hmm, something went wrong. Let me know if you'd like to try again.");
     } finally {
-      if (!this.isCancelled) {
+      if (this.isRunCurrent(runId)) {
         this.setState('idle');
       }
     }
@@ -306,7 +415,8 @@ class SessionManager {
 
   // Wait for the page to settle after an action. Navigate/click get longer waits,
   // keyboard actions get shorter ones. Uses network idle when possible.
-  private async waitForSettle(actionType: string): Promise<void> {
+  private async waitForSettle(actionType: string, runId: number): Promise<void> {
+    if (!this.isRunCurrent(runId)) return;
     const needsLongerWait = ['navigate', 'click', 'back', 'select'].includes(actionType);
 
     if (needsLongerWait) {
@@ -343,11 +453,7 @@ class SessionManager {
   }
 
   async cancel(): Promise<void> {
-    this.isCancelled = true;
-    if (this.waitTimeout) {
-      clearTimeout(this.waitTimeout);
-      this.waitTimeout = null;
-    }
+    this.invalidateRun();
     ttsService.stop();
     ttsService.speakImmediate('Cancelled.');
     windowManager.hideSallyBar();
@@ -374,18 +480,12 @@ class SessionManager {
   }
 
   setListening(): void {
-    if (this.waitTimeout) {
-      clearTimeout(this.waitTimeout);
-      this.waitTimeout = null;
-    }
+    this.clearWaitTimeout();
     this.setState('listening');
   }
 
   setIdle(): void {
-    if (this.waitTimeout) {
-      clearTimeout(this.waitTimeout);
-      this.waitTimeout = null;
-    }
+    this.clearWaitTimeout();
     this.setState('idle');
   }
 }

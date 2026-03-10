@@ -186,19 +186,53 @@ export default function ConfigWindow() {
   const [elevenLabsKey, setElevenLabsKey] = useState('');
   const [whisperKey, setWhisperKey] = useState('');
   const [geminiBackendUrl, setGeminiBackendUrl] = useState('');
-  const [backendHealth, setBackendHealth] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
+  const [backendHealth, setBackendHealth] = useState<{
+    status: 'idle' | 'configured' | 'checking' | 'connected' | 'failed';
+    model: string | null;
+  }>({ status: 'idle', model: null });
   const [testResult, setTestResult] = useState<boolean | null>(null);
   const [testing, setTesting] = useState(false);
+
+  const checkBackendHealth = useCallback(async (url?: string) => {
+    const target = (url || geminiBackendUrl || config?.geminiBackendUrl || '').trim();
+    if (!target) return;
+
+    setBackendHealth((current) => ({ status: 'checking', model: current.model }));
+
+    try {
+      const response = await fetch(`${target.replace(/\/$/, '')}/health`, {
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (response.ok) {
+        const payload = await response.json().catch(() => null) as { model?: unknown } | null;
+        setBackendHealth({
+          status: 'connected',
+          model: typeof payload?.model === 'string' ? payload.model : null,
+        });
+      } else {
+        setBackendHealth({ status: 'failed', model: null });
+      }
+    } catch {
+      setBackendHealth({ status: 'failed', model: null });
+    }
+  }, [config?.geminiBackendUrl, geminiBackendUrl]);
 
   const loadConfig = useCallback(async () => {
     try {
       const cfg = await ipc.invoke('sally:get-config');
       setConfig(cfg);
       setGeminiBackendUrl(cfg.geminiBackendUrl);
+      if (cfg.geminiBackendUrl.trim()) {
+        setBackendHealth({ status: 'configured', model: null });
+        void checkBackendHealth(cfg.geminiBackendUrl);
+      } else {
+        setBackendHealth({ status: 'idle', model: null });
+      }
     } catch (e) {
       console.error('Failed to load config:', e);
     }
-  }, []);
+  }, [checkBackendHealth]);
 
   useEffect(() => {
     loadConfig();
@@ -244,35 +278,18 @@ export default function ConfigWindow() {
     setGeminiBackendUrl(nextUrl);
     await loadConfig();
     if (nextUrl) {
+      setBackendHealth({ status: 'configured', model: null });
       void checkBackendHealth(nextUrl);
     } else {
-      setBackendHealth('idle');
+      setBackendHealth({ status: 'idle', model: null });
     }
   };
 
   const handleClearGeminiBackendUrl = async () => {
     await ipc.invoke('sally:set-gemini-backend-url', '');
     setGeminiBackendUrl('');
-    setBackendHealth('idle');
+    setBackendHealth({ status: 'idle', model: null });
     loadConfig();
-  };
-
-  const checkBackendHealth = async (url?: string) => {
-    const target = (url || geminiBackendUrl || config?.geminiBackendUrl || '').trim();
-    if (!target) return;
-    setBackendHealth('checking');
-    try {
-      const response = await fetch(`${target.replace(/\/$/, '')}/health`, {
-        signal: AbortSignal.timeout(5000),
-      });
-      if (response.ok) {
-        setBackendHealth('ok');
-      } else {
-        setBackendHealth('error');
-      }
-    } catch {
-      setBackendHealth('error');
-    }
   };
 
   if (!config) {
@@ -451,7 +468,7 @@ export default function ConfigWindow() {
           <CardHeader
             title="Sally Vision Backend"
             description="Cloud Run URL for Gemini screen interpretation (optional — falls back to direct Gemini API calls)."
-            indicator={config.geminiBackendUrl ? 'green' : 'gray'}
+            indicator={backendHealth.status === 'connected' || config.geminiBackendUrl ? 'green' : 'gray'}
           />
           <div style={{ marginBottom: 10 }}>
             <input
@@ -480,8 +497,8 @@ export default function ConfigWindow() {
             </PrimaryButton>
             {config.geminiBackendUrl && (
               <>
-                <SecondaryButton onClick={() => checkBackendHealth()} disabled={backendHealth === 'checking'}>
-                  {backendHealth === 'checking' ? 'Checking...' : 'Test Connection'}
+                <SecondaryButton onClick={() => checkBackendHealth()} disabled={backendHealth.status === 'checking'}>
+                  {backendHealth.status === 'checking' ? 'Checking...' : 'Check Cloud Run'}
                 </SecondaryButton>
                 <SecondaryButton onClick={handleClearGeminiBackendUrl}>
                   Clear URL
@@ -497,22 +514,29 @@ export default function ConfigWindow() {
                   height: 8,
                   borderRadius: '50%',
                   background:
-                    backendHealth === 'ok' ? '#22C55E' :
-                    backendHealth === 'error' ? '#DC2626' :
-                    backendHealth === 'checking' ? '#CA8A04' : '#D1D5DB',
+                    backendHealth.status === 'connected' ? '#22C55E' :
+                    backendHealth.status === 'failed' ? '#DC2626' :
+                    backendHealth.status === 'checking' ? '#CA8A04' :
+                    backendHealth.status === 'configured' ? '#2563EB' : '#D1D5DB',
                 }}
               />
               <span style={{
                 fontSize: 11,
                 color:
-                  backendHealth === 'ok' ? '#16A34A' :
-                  backendHealth === 'error' ? '#DC2626' :
-                  backendHealth === 'checking' ? '#CA8A04' : '#6B7280',
+                  backendHealth.status === 'connected' ? '#16A34A' :
+                  backendHealth.status === 'failed' ? '#DC2626' :
+                  backendHealth.status === 'checking' ? '#CA8A04' :
+                  backendHealth.status === 'configured' ? '#2563EB' : '#6B7280',
               }}>
-                {backendHealth === 'ok' ? 'Backend is live' :
-                 backendHealth === 'error' ? 'Backend unreachable' :
-                 backendHealth === 'checking' ? 'Checking...' :
-                 'Backend configured'}
+                {backendHealth.status === 'connected'
+                  ? `Connected to Cloud Run${backendHealth.model ? ` (${backendHealth.model})` : ''}`
+                  : backendHealth.status === 'failed'
+                    ? 'Cloud Run connection failed'
+                    : backendHealth.status === 'checking'
+                      ? 'Checking Cloud Run health...'
+                      : backendHealth.status === 'configured'
+                        ? 'Cloud Run URL configured'
+                        : 'Cloud Run not configured'}
               </span>
             </div>
           )}

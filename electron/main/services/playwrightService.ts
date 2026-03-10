@@ -73,6 +73,24 @@ class PlaywrightService {
     };
   }
 
+  async getBrowserWindowBounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+    const page = await this.launch();
+
+    try {
+      const bounds = await page.evaluate(() => ({
+        x: Math.round(Number((globalThis as Record<string, unknown>).screenX ?? 0)),
+        y: Math.round(Number((globalThis as Record<string, unknown>).screenY ?? 0)),
+        width: Math.max(Math.round(Number((globalThis as Record<string, unknown>).outerWidth ?? 0)), 1),
+        height: Math.max(Math.round(Number((globalThis as Record<string, unknown>).outerHeight ?? 0)), 1),
+      }));
+
+      return bounds;
+    } catch (error) {
+      console.warn('[Playwright] Failed to read browser window bounds:', error);
+      return null;
+    }
+  }
+
   async takeScreenshot(): Promise<string> {
     const page = await this.launch();
     const buffer = await page.screenshot({ type: 'png', fullPage: false, timeout: 10_000 });

@@ -4,7 +4,6 @@ import { uIOhook, UiohookKey, type UiohookKeyboardEvent } from 'uiohook-napi';
 import { microphoneManager } from './managers/microphoneManager.js';
 import { windowManager } from './windowManager.js';
 import { sessionManager } from './managers/sessionManager.js';
-import { ttsService } from './services/ttsService.js';
 
 const PUSH_TO_TALK_KEY = UiohookKey.AltRight;
 const MIN_HOLD_DURATION = 300;
@@ -112,8 +111,7 @@ class HotkeyManager {
 
   private onKeyDown(): void {
     console.log(`[Hotkey] ${PUSH_TO_TALK_LABEL} pressed - start recording`);
-    ttsService.stop();
-    sessionManager.setListening();
+    sessionManager.beginListeningFromHotkey();
     this.sendHotkeyMessage('hotkey:start-recording', { ensureVisible: true, syncState: true });
   }
 

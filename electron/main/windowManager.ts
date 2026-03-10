@@ -16,6 +16,7 @@ class WindowManager {
   private configWindow: BrowserWindow | null = null;
   private sallyBarWindow: BrowserWindow | null = null;
   private borderOverlayWindow: BrowserWindow | null = null;
+  private borderOverlayTargetDisplayId: number | null = null;
 
   private attachWindowDiagnostics(win: BrowserWindow, name: string): void {
     win.webContents.on('console-message', (_event, level, message) => {
@@ -193,20 +194,59 @@ class WindowManager {
 
   // ── Gold border overlay ──
 
+  private getDisplayById(displayId: number | null) {
+    if (displayId === null) return null;
+    return screen.getAllDisplays().find((display) => display.id === displayId) || null;
+  }
+
+  private resolveBorderOverlayDisplay() {
+    const targetedDisplay = this.getDisplayById(this.borderOverlayTargetDisplayId);
+    if (targetedDisplay) {
+      return targetedDisplay;
+    }
+
+    const cursorPoint = screen.getCursorScreenPoint();
+    return screen.getDisplayNearestPoint(cursorPoint) || screen.getPrimaryDisplay();
+  }
+
+  private getBorderOverlayBounds(): { x: number; y: number; width: number; height: number } {
+    const { x, y, width, height } = this.resolveBorderOverlayDisplay().bounds;
+    return { x, y, width, height };
+  }
+
+  private syncBorderOverlayBounds(): void {
+    if (!this.borderOverlayWindow || this.borderOverlayWindow.isDestroyed()) return;
+    this.borderOverlayWindow.setBounds(this.getBorderOverlayBounds());
+  }
+
+  setBorderOverlayTargetToCursor(): void {
+    const cursorPoint = screen.getCursorScreenPoint();
+    this.borderOverlayTargetDisplayId = screen.getDisplayNearestPoint(cursorPoint).id;
+    this.syncBorderOverlayBounds();
+  }
+
+  setBorderOverlayTargetByBounds(bounds: { x: number; y: number; width: number; height: number } | null): void {
+    if (!bounds) {
+      this.borderOverlayTargetDisplayId = null;
+      this.syncBorderOverlayBounds();
+      return;
+    }
+
+    this.borderOverlayTargetDisplayId = screen.getDisplayMatching(bounds).id;
+    this.syncBorderOverlayBounds();
+  }
+
   showBorderOverlay(): void {
+    const bounds = this.getBorderOverlayBounds();
+
     if (this.borderOverlayWindow && !this.borderOverlayWindow.isDestroyed()) {
+      this.borderOverlayWindow.setBounds(bounds);
       this.borderOverlayWindow.show();
       return;
     }
 
-    const primaryDisplay = screen.getPrimaryDisplay();
-    const { width, height } = primaryDisplay.size;
-
     this.borderOverlayWindow = new BrowserWindow({
-      x: 0,
-      y: 0,
-      width,
-      height,
+      ...bounds,
       frame: false,
       transparent: true,
       alwaysOnTop: true,
