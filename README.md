@@ -147,6 +147,40 @@ cp .env.example .env
 # Edit .env with your API keys
 ```
 
+## AI IDE Quickstart
+
+If you're using an AI coding IDE or agent, you can give it the prompt below.
+
+### Suggested Prompt
+
+> Read `README.md` and `docs/architecture.md` fully so you understand the product, architecture, and current codebase before making changes.
+>
+> Then:
+>
+> 1. Set up the project locally.
+> 2. Install all required dependencies.
+> 3. Verify whether the project is fully up to date and working.
+> 4. Prefer validating the desktop app first, then the optional backend in `sally-backend/`.
+> 5. Run the appropriate checks, builds, and verification steps.
+> 6. Flag anything broken, outdated, duplicated, unnecessary, or inconsistent in the setup or codebase.
+>
+> Important rules:
+>
+> - Do **not** ask me for API keys, secrets, or credentials during normal setup.
+> - Instead, tell me exactly where I should add them in the app UI or `.env` file when needed.
+> - Do **not** invent missing configuration values.
+> - Do **not** deploy anything automatically.
+> - If backend deployment is relevant, inspect `sally-backend/` first and then ask me whether I want you to deploy it to Google Cloud Run.
+> - If I say yes, collect only the required deployment details from me, prepare the Cloud Run setup, and execute it only after confirmation.
+>
+> Focus on:
+>
+> - getting the desktop app working end to end
+> - verifying local setup
+> - checking for stale docs or broken scripts
+> - confirming the backend setup path if needed
+> - keeping the repo clean and hackathon-ready
+
 ### Cloud Run Backend Deployment (Optional)
 
 The Sally Vision Backend runs on Google Cloud Run and proxies Gemini API calls. (This is optional — Sally falls back to direct Gemini API calls if the backend is unavailable.)
