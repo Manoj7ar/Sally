@@ -1,99 +1,44 @@
 // Playwright browser automation service — uses the user's real Chrome profile
-import { existsSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { chromium, type BrowserContext, type Page, type Locator } from 'playwright-core';
 import type { GeminiAction } from './geminiService.js';
+import { findBrowserLaunchTarget } from '../utils/browserDiscovery.js';
 
 const ACTION_TIMEOUT_MS = 10_000;
 const MAX_SELECTOR_LENGTH = 500;
 
-// Browser executable paths (Windows) — Chrome first, Edge as fallback
-const BROWSER_PATHS = [
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  process.env.LOCALAPPDATA
-    ? `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`
-    : '',
-  process.env.LOCALAPPDATA
-    ? `${process.env.LOCALAPPDATA}\\Google\\Chrome SxS\\Application\\chrome.exe`
-    : '',
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-].filter(Boolean);
-
-// Chrome user data directories (Windows)
-const CHROME_PROFILE_PATHS = [
-  process.env.LOCALAPPDATA
-    ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'User Data')
-    : '',
-  join(homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data'),
-].filter(Boolean);
-
-const EDGE_PROFILE_PATHS = [
-  process.env.LOCALAPPDATA
-    ? join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'User Data')
-    : '',
-  join(homedir(), 'AppData', 'Local', 'Microsoft', 'Edge', 'User Data'),
-].filter(Boolean);
-
 class PlaywrightService {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
-
-  private findBrowser(): string | undefined {
-    for (const p of BROWSER_PATHS) {
-      try {
-        if (existsSync(p)) return p;
-      } catch { /* skip */ }
-    }
-    return undefined;
-  }
-
-  private findUserDataDir(executablePath?: string): string | undefined {
-    // If we're using Edge, look for Edge profile
-    const isEdge = executablePath?.toLowerCase().includes('edge');
-    const paths = isEdge ? EDGE_PROFILE_PATHS : CHROME_PROFILE_PATHS;
-
-    for (const p of paths) {
-      try {
-        if (existsSync(p)) {
-          console.log('[Playwright] Found user data dir:', p);
-          return p;
-        }
-      } catch { /* skip */ }
-    }
-
-    // Fallback: try Chrome profiles even if using Edge
-    if (isEdge) {
-      for (const p of CHROME_PROFILE_PATHS) {
-        try {
-          if (existsSync(p)) return p;
-        } catch { /* skip */ }
-      }
-    }
-
-    return undefined;
-  }
+  private ephemeralUserDataDir: string | null = null;
 
   async launch(): Promise<Page> {
     if (this.page && !this.page.isClosed()) {
       return this.page;
     }
 
-    const executablePath = this.findBrowser();
-    const userDataDir = this.findUserDataDir(executablePath);
+    const browserTarget = findBrowserLaunchTarget();
+    if (!browserTarget) {
+      throw new Error('No supported browser installation found. Install Google Chrome, Chromium, or Microsoft Edge.');
+    }
+
+    const userDataDir = browserTarget.userDataDir || mkdtempSync(join(tmpdir(), 'sally-browser-'));
+    this.ephemeralUserDataDir = browserTarget.userDataDir ? null : userDataDir;
 
     console.log('[Playwright] Launching browser');
-    console.log('[Playwright]   executable:', executablePath || 'bundled');
-    console.log('[Playwright]   userDataDir:', userDataDir || 'none (clean profile)');
+    console.log('[Playwright]   browser:', browserTarget.label);
+    console.log('[Playwright]   executable:', browserTarget.executablePath || `channel:${browserTarget.channel || 'default'}`);
+    console.log('[Playwright]   userDataDir:', browserTarget.userDataDir || `${userDataDir} (temporary)`);
 
     // Use launchPersistentContext to get the user's logged-in sessions
     this.context = await chromium.launchPersistentContext(
-      userDataDir || '',
+      userDataDir,
       {
         headless: false,
-        ...(executablePath ? { executablePath } : {}),
+        ...(browserTarget.executablePath ? { executablePath: browserTarget.executablePath } : {}),
+        ...(!browserTarget.executablePath && browserTarget.channel ? { channel: browserTarget.channel } : {}),
         args: [
           '--start-maximized',
           '--no-first-run',
@@ -114,6 +59,7 @@ class PlaywrightService {
       console.log('[Playwright] Browser context closed');
       this.context = null;
       this.page = null;
+      this.cleanupEphemeralUserDataDir();
     });
 
     return this.page;
@@ -508,11 +454,24 @@ class PlaywrightService {
     } finally {
       this.context = null;
       this.page = null;
+      this.cleanupEphemeralUserDataDir();
     }
   }
 
   isRunning(): boolean {
     return this.context !== null;
+  }
+
+  private cleanupEphemeralUserDataDir(): void {
+    if (!this.ephemeralUserDataDir) return;
+
+    try {
+      rmSync(this.ephemeralUserDataDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup failures for temporary browser profiles.
+    } finally {
+      this.ephemeralUserDataDir = null;
+    }
   }
 }
 

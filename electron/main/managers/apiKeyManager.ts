@@ -1,5 +1,6 @@
 // API Key manager - BYOK storage for provider, ElevenLabs, and Whisper keys
 import { store, STORE_KEYS } from '../utils/store.js';
+import type { SallyProvider } from '../../../shared/types.js';
 
 class ApiKeyManager {
   // ============ ANTHROPIC API KEY ============
@@ -106,68 +107,43 @@ class ApiKeyManager {
 
   // ============ GENERIC KEY METHODS (delegate by current provider) ============
 
-  setApiKey(provider: string, key: string): void {
-    if (provider === 'openai') {
-      this.setOpenAIApiKey(key);
-    } else if (provider === 'gemini') {
-      this.setGeminiApiKey(key);
-    } else {
-      this.setAnthropicApiKey(key);
+  setApiKey(provider: SallyProvider, key: string): void {
+    if (provider !== 'gemini') {
+      throw new Error(`Unsupported provider: ${provider}`);
     }
+    this.setGeminiApiKey(key);
   }
 
   getApiKey(): string | null {
-    const provider = this.getProvider();
-    if (provider === 'openai') return this.getOpenAIApiKey();
-    if (provider === 'gemini') return this.getGeminiApiKey();
-    return this.getAnthropicApiKey();
+    return this.getGeminiApiKey();
   }
 
   hasApiKey(): boolean {
-    const provider = this.getProvider();
-    if (provider === 'openai') return this.hasOpenAIApiKey();
-    if (provider === 'gemini') return this.hasGeminiApiKey();
-    return this.hasAnthropicApiKey();
+    return this.hasGeminiApiKey();
   }
 
   clearApiKey(): void {
-    const provider = this.getProvider();
-    if (provider === 'openai') {
-      this.clearOpenAIApiKey();
-    } else if (provider === 'gemini') {
-      this.clearGeminiApiKey();
-    } else {
-      this.clearAnthropicApiKey();
-    }
+    this.clearGeminiApiKey();
   }
 
   // ============ PROVIDER ============
 
-  getProvider(): string {
-    return store.get(STORE_KEYS.PROVIDER) || 'gemini';
+  getProvider(): SallyProvider {
+    return 'gemini';
   }
 
-  setProvider(provider: string): void {
-    store.set(STORE_KEYS.PROVIDER, provider);
+  setProvider(provider: SallyProvider): void {
+    if (provider !== 'gemini') {
+      throw new Error(`Unsupported provider: ${provider}`);
+    }
+    store.set(STORE_KEYS.PROVIDER, 'gemini');
   }
 
   // ============ KEY VALIDATION ============
 
-  async testApiKey(provider: string, key: string): Promise<boolean> {
+  async testApiKey(provider: SallyProvider, key: string): Promise<boolean> {
     try {
-      if (provider === 'anthropic') {
-        const response = await fetch('https://api.anthropic.com/v1/models', {
-          method: 'GET',
-          headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-        });
-        return response.ok;
-      } else if (provider === 'openai') {
-        const response = await fetch('https://api.openai.com/v1/models', {
-          method: 'GET',
-          headers: { 'Authorization': `Bearer ${key}` },
-        });
-        return response.ok;
-      } else if (provider === 'gemini') {
+      if (provider === 'gemini') {
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
           { method: 'GET', signal: AbortSignal.timeout(5000) },
@@ -178,6 +154,10 @@ class ApiKeyManager {
     } catch {
       return false;
     }
+  }
+
+  hasGeminiBackendUrl(): boolean {
+    return this.getGeminiBackendUrl().trim().length > 0;
   }
 }
 

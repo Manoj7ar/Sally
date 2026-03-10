@@ -17,6 +17,13 @@ class WindowManager {
   private sallyBarWindow: BrowserWindow | null = null;
   private borderOverlayWindow: BrowserWindow | null = null;
 
+  private attachWindowDiagnostics(win: BrowserWindow, name: string): void {
+    win.webContents.on('console-message', (_event, level, message) => {
+      const levelLabel = level === 3 ? 'error' : level === 2 ? 'warn' : 'log';
+      console.log(`[Renderer:${name}:${levelLabel}] ${message}`);
+    });
+  }
+
   private getSallyBarBounds(layout: SallyBarLayout): { x: number; y: number; width: number; height: number } {
     const primaryDisplay = screen.getPrimaryDisplay();
     const { x: displayX, y: displayY, width: displayWidth } = primaryDisplay.workArea;
@@ -90,10 +97,7 @@ class WindowManager {
     });
 
     this.configWindow.loadURL(this.getRendererUrl('config'));
-
-    this.configWindow.webContents.on('console-message', (_e, _level, message) => {
-      console.log('Renderer:', message);
-    });
+    this.attachWindowDiagnostics(this.configWindow, 'config');
 
     this.configWindow.once('ready-to-show', () => {
       this.configWindow?.show();
@@ -158,6 +162,7 @@ class WindowManager {
     });
 
     this.sallyBarWindow.loadURL(this.getRendererUrl('sallyBar'));
+    this.attachWindowDiagnostics(this.sallyBarWindow, 'sallyBar');
 
     this.sallyBarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
@@ -228,6 +233,7 @@ class WindowManager {
     }
 
     this.borderOverlayWindow.loadURL(this.getRendererUrl('borderOverlay'));
+    this.attachWindowDiagnostics(this.borderOverlayWindow, 'borderOverlay');
 
     this.borderOverlayWindow.once('ready-to-show', () => {
       if (this.borderOverlayWindow && !this.borderOverlayWindow.isDestroyed()) {

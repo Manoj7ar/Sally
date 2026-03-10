@@ -1,4 +1,4 @@
-// Audio transcription service — Gemini 2.0 Flash (primary) or OpenAI Whisper (fallback)
+// Audio transcription service — Gemini 2.5 Flash (primary) or OpenAI Whisper (fallback)
 import { apiKeyManager } from '../managers/apiKeyManager.js';
 import { GEMINI_MODEL } from '../utils/constants.js';
 
@@ -6,9 +6,8 @@ class WhisperService {
   async transcribe(audioBase64: string, mimeType: string): Promise<string> {
     const geminiKey = apiKeyManager.getGeminiApiKey();
     const whisperKey = apiKeyManager.getWhisperKey();
-    const provider = apiKeyManager.getProvider();
 
-    if (provider === 'gemini' && geminiKey) {
+    if (geminiKey) {
       try {
         return await this.transcribeWithGemini(audioBase64, mimeType, geminiKey);
       } catch (error) {

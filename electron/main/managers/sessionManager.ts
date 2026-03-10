@@ -80,7 +80,7 @@ class SessionManager {
 
     try {
       if (!apiKeyManager.hasGeminiApiKey() && !apiKeyManager.hasWhisperKey()) {
-        ttsService.speakImmediate('Please configure your Gemini API key in settings for speech transcription.');
+        ttsService.speakImmediate('Please configure a Gemini API key or OpenAI Whisper key in settings for speech transcription.');
         this.setState('idle');
         return '';
       }
@@ -178,8 +178,8 @@ class SessionManager {
   }
 
   private async agenticBrowse(instruction: string): Promise<void> {
-    if (!apiKeyManager.hasGeminiApiKey()) {
-      ttsService.speakImmediate("I need a Gemini API key to work. You can add one in settings.");
+    if (!apiKeyManager.hasGeminiApiKey() && !apiKeyManager.hasGeminiBackendUrl()) {
+      ttsService.speakImmediate("I need Gemini vision configured to browse. Add a Gemini API key or Sally Vision Backend URL in settings.");
       this.setState('idle');
       return;
     }

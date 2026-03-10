@@ -25,15 +25,15 @@ export function registerIpcHandlers(): void {
     return apiKeyManager.getProvider();
   });
 
-  ipcMain.handle('sally:set-provider', (_e, provider: string) => {
+  ipcMain.handle('sally:set-provider', (_e, provider: Parameters<typeof apiKeyManager.setProvider>[0]) => {
     apiKeyManager.setProvider(provider);
   });
 
-  ipcMain.handle('sally:set-api-key', async (_e, data: { provider: string; key: string }) => {
+  ipcMain.handle('sally:set-api-key', async (_e, data: { provider: Parameters<typeof apiKeyManager.setApiKey>[0]; key: string }) => {
     apiKeyManager.setApiKey(data.provider, data.key);
   });
 
-  ipcMain.handle('sally:test-api-key', async (_e, data: { provider: string; key: string }) => {
+  ipcMain.handle('sally:test-api-key', async (_e, data: { provider: Parameters<typeof apiKeyManager.testApiKey>[0]; key: string }) => {
     return apiKeyManager.testApiKey(data.provider, data.key);
   });
 

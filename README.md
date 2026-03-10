@@ -116,11 +116,18 @@ The Cloud Run backend receives a base64 PNG screenshot + user instruction, calls
 
 ### Prerequisites
 
+For the full platform, use Node.js 20+.
+
 You'll need API keys for:
+- Gemini is required for vision, browser automation, and the default speech-to-text path.
+- ElevenLabs is required for text-to-speech.
+- OpenAI is optional and only used for Whisper fallback transcription.
 - **Gemini** (Google AI Studio) — for vision, AI provider, and speech-to-text transcription
 - **ElevenLabs** — for text-to-speech
 
 ### Desktop App
+
+Run `npm run verify:desktop` after installing dependencies to confirm the Node version, native hotkey module, and browser automation prerequisites.
 
 ```bash
 # Install dependencies
@@ -132,8 +139,11 @@ npm run dev
 
 Configure API keys in the Settings window, or set them in a `.env` file:
 
+On Windows PowerShell, use `Copy-Item .env.example .env` instead of `cp`.
+
 ```bash
 cp .env.example .env
+# Optional: add OPENAI_API_KEY if you want Whisper fallback
 # Edit .env with your API keys
 ```
 
@@ -174,6 +184,8 @@ Follow these steps to verify Sally works end-to-end on your machine.
 | **Microphone** | Any working mic for voice input |
 | **OS** | Windows 10/11 (primary), macOS supported |
 
+Use Node.js 20+ for the full repo, and make sure Chrome, Chromium, or Edge is installed locally for Playwright automation.
+
 ### Setup (< 3 minutes)
 
 ```bash
@@ -181,8 +193,9 @@ Follow these steps to verify Sally works end-to-end on your machine.
 git clone https://github.com/manoj7ar/sally.git
 cd sally
 npm install
+npm run verify:desktop
 
-# 2. Configure API keys (choose ONE method)
+# 2. Configure API keys (Gemini + ElevenLabs required, OpenAI optional for Whisper fallback)
 
 # Option A: Environment file
 cp .env.example .env
@@ -259,6 +272,8 @@ Verifies: Text-based instruction path
 | No audio / TTS silent | Check ElevenLabs key in Settings, verify speakers are on |
 | "Gemini API key" error | Add key in Settings > AI Provider > Gemini > Save |
 | Hotkey not working | Restart the app; on macOS grant Accessibility permission |
+
+For a full repo health check, run `npm run check`.
 
 ## Tech Stack
 

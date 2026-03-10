@@ -28,7 +28,7 @@ export function AccessibilityScore() {
   useEffect(() => {
     if (inView && !animatedRef.current) {
       animatedRef.current = true;
-      setCircleAnimated(true);
+      requestAnimationFrame(() => setCircleAnimated(true));
 
       // Animate number
       const start = performance.now();

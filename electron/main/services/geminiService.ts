@@ -17,6 +17,10 @@ export interface GeminiInterpretResult {
 
 const BACKEND_COOLDOWN_MS = 5 * 60 * 1000;
 const BACKEND_TIMEOUT_MS = 8000;
+const VALID_ACTION_TYPES = new Set([
+  'navigate', 'click', 'fill', 'type', 'select', 'press',
+  'hover', 'scroll', 'scroll_up', 'back', 'wait', 'null',
+]);
 
 const SYSTEM_PROMPT = `You are Sally — a warm, confident, and reassuring AI assistant who helps people navigate and control the web using their voice. You assist users with motor impairments, cognitive disabilities, repetitive strain injuries, or anyone who simply wants faster, hands-free web interaction. You have a friendly personality: you're patient, encouraging, and always let the user know exactly what you're doing. Think of yourself as a helpful friend sitting next to them, describing what's on screen and taking action on their behalf.
 
@@ -123,6 +127,9 @@ class GeminiService {
       body: JSON.stringify({
         screenshot: params.screenshot,
         instruction: params.instruction,
+        history: params.history,
+        pageUrl: params.pageUrl,
+        pageTitle: params.pageTitle,
       }),
       signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
     });
@@ -137,7 +144,7 @@ class GeminiService {
     let action: GeminiAction | null = null;
     if (raw.action && typeof raw.action === 'object' && !Array.isArray(raw.action)) {
       const a = raw.action as Record<string, unknown>;
-      if (typeof a.type === 'string') {
+      if (typeof a.type === 'string' && VALID_ACTION_TYPES.has(a.type)) {
         action = { type: a.type } as GeminiAction;
         if (typeof a.selector === 'string') action.selector = a.selector;
         if (typeof a.value === 'string') action.value = a.value;
@@ -208,11 +215,6 @@ Return exactly ONE action — the next step toward the goal. You will be called 
         temperature: 0.2,
       },
     });
-
-    const VALID_ACTION_TYPES = new Set([
-      'navigate', 'click', 'fill', 'type', 'select', 'press',
-      'hover', 'scroll', 'scroll_up', 'back', 'wait', 'null',
-    ]);
 
     const text = result.text || '';
     let parsed: Record<string, unknown> | null = null;

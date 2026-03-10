@@ -182,7 +182,6 @@ function SecondaryButton({
 
 export default function ConfigWindow() {
   const [config, setConfig] = useState<SallyConfig | null>(null);
-  const [provider, setProvider] = useState('gemini');
   const [providerKey, setProviderKey] = useState('');
   const [elevenLabsKey, setElevenLabsKey] = useState('');
   const [whisperKey, setWhisperKey] = useState('');
@@ -195,7 +194,7 @@ export default function ConfigWindow() {
     try {
       const cfg = await ipc.invoke('sally:get-config');
       setConfig(cfg);
-      setProvider(cfg.provider);
+      setGeminiBackendUrl(cfg.geminiBackendUrl);
     } catch (e) {
       console.error('Failed to load config:', e);
     }
@@ -207,7 +206,7 @@ export default function ConfigWindow() {
 
   const handleSaveProviderKey = async () => {
     if (!providerKey) return;
-    await ipc.invoke('sally:set-api-key', { provider, key: providerKey });
+    await ipc.invoke('sally:set-api-key', { provider: 'gemini', key: providerKey });
     setProviderKey('');
     loadConfig();
   };
@@ -215,7 +214,7 @@ export default function ConfigWindow() {
   const handleTestProviderKey = async () => {
     if (!providerKey) return;
     setTesting(true);
-    const result = await ipc.invoke('sally:test-api-key', { provider, key: providerKey });
+    const result = await ipc.invoke('sally:test-api-key', { provider: 'gemini', key: providerKey });
     setTestResult(result);
     setTesting(false);
   };
@@ -240,13 +239,26 @@ export default function ConfigWindow() {
   };
 
   const handleSaveGeminiBackendUrl = async () => {
-    await ipc.invoke('sally:set-gemini-backend-url', geminiBackendUrl);
+    const nextUrl = geminiBackendUrl.trim();
+    await ipc.invoke('sally:set-gemini-backend-url', nextUrl);
+    setGeminiBackendUrl(nextUrl);
+    await loadConfig();
+    if (nextUrl) {
+      void checkBackendHealth(nextUrl);
+    } else {
+      setBackendHealth('idle');
+    }
+  };
+
+  const handleClearGeminiBackendUrl = async () => {
+    await ipc.invoke('sally:set-gemini-backend-url', '');
+    setGeminiBackendUrl('');
+    setBackendHealth('idle');
     loadConfig();
-    checkBackendHealth(geminiBackendUrl);
   };
 
   const checkBackendHealth = async (url?: string) => {
-    const target = url || geminiBackendUrl || config?.geminiBackendUrl;
+    const target = (url || geminiBackendUrl || config?.geminiBackendUrl || '').trim();
     if (!target) return;
     setBackendHealth('checking');
     try {
@@ -263,13 +275,6 @@ export default function ConfigWindow() {
     }
   };
 
-  const handleProviderChange = async (newProvider: string) => {
-    setProvider(newProvider);
-    await ipc.invoke('sally:set-provider', newProvider);
-    setTestResult(null);
-    loadConfig();
-  };
-
   if (!config) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff' }}>
@@ -277,6 +282,9 @@ export default function ConfigWindow() {
       </div>
     );
   }
+
+  const pushToTalkKeyLabel = ipc.getPlatform() === 'darwin' ? 'Right Option' : 'Right Alt';
+  const backendUrlChanged = geminiBackendUrl.trim() !== config.geminiBackendUrl;
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#FFFFFF', color: '#1a1a1e' }}>
@@ -338,42 +346,16 @@ export default function ConfigWindow() {
         {/* AI Provider */}
         <Card>
           <CardHeader
-            title="AI Provider"
-            description="Choose your AI backend"
-            indicator={config.hasProviderKey ? 'green' : 'gray'}
+            title="AI Model"
+            description="Gemini powers screen understanding, browser automation, and the default speech-to-text path."
+            indicator={config.hasGeminiKey ? 'green' : 'gray'}
           />
-          <div style={{ display: 'flex', gap: 4, marginBottom: 12, flexWrap: 'wrap' }}>
-            {(['anthropic', 'openai', 'gemini'] as const).map((p) => (
-              <button
-                key={p}
-                onClick={() => handleProviderChange(p)}
-                style={{
-                  padding: '6px 20px',
-                  borderRadius: 8,
-                  border: provider === p ? '1px solid #2563EB' : '1px solid #E8E8EC',
-                  background: provider === p ? 'rgba(37,99,235,0.08)' : '#fff',
-                  color: provider === p ? '#2563EB' : '#6B7280',
-                  fontSize: 13,
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                  transition: 'all 0.15s, transform 0.15s',
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.03)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
-              >
-                {p === 'anthropic' ? 'Anthropic' : p === 'openai' ? 'OpenAI' : 'Gemini'}
-              </button>
-            ))}
-          </div>
-
           <div style={{ marginBottom: 10 }}>
-            <label style={{ display: 'block', fontSize: 12, color: '#6B7280', marginBottom: 6 }}>
-              {provider === 'anthropic' ? 'Anthropic API Key' : provider === 'openai' ? 'OpenAI API Key' : 'Gemini API Key'}
-            </label>
+            <label style={{ display: 'block', fontSize: 12, color: '#6B7280', marginBottom: 6 }}>Gemini API Key</label>
             <KeyInput
               value={providerKey}
               onChange={setProviderKey}
-              placeholder={config.hasProviderKey ? 'Key configured (hidden)' : 'Enter API key...'}
+              placeholder={config.hasGeminiKey ? 'Key configured (hidden)' : 'Enter Gemini API key...'}
             />
           </div>
 
@@ -384,7 +366,7 @@ export default function ConfigWindow() {
             <SecondaryButton onClick={handleTestProviderKey} disabled={!providerKey || testing}>
               {testing ? 'Testing...' : 'Test'}
             </SecondaryButton>
-            {config.hasProviderKey && (
+            {config.hasGeminiKey && (
               <SecondaryButton onClick={handleClearProviderKey} danger>
                 Clear
               </SecondaryButton>
@@ -436,117 +418,112 @@ export default function ConfigWindow() {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ fontSize: 13, fontWeight: 500, color: '#1a1a1e' }}>Speech-to-Text</span>
-              <span style={{ fontSize: 11, color: '#6B7280' }}>
-                {provider === 'gemini' ? 'Gemini 2.0 Flash' : 'OpenAI Whisper'}
-              </span>
+              <span style={{ fontSize: 11, color: '#6B7280' }}>Gemini 2.5 Flash with optional OpenAI Whisper fallback</span>
               <span
                 style={{
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  background: provider === 'gemini'
-                    ? (config.hasGeminiKey ? '#22C55E' : '#D1D5DB')
-                    : (config.hasWhisperKey ? '#22C55E' : '#D1D5DB'),
+                  background: (config.hasGeminiKey || config.hasWhisperKey) ? '#22C55E' : '#D1D5DB',
                   marginLeft: 'auto',
                 }}
               />
             </div>
-            {provider === 'gemini' ? (
-              <p style={{ fontSize: 12, color: '#6B7280', margin: 0 }}>
-                Uses your Gemini API key for transcription — no separate key needed.
-              </p>
-            ) : (
-              <div style={{ display: 'flex', gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <KeyInput
-                    value={whisperKey}
-                    onChange={setWhisperKey}
-                    placeholder={config.hasWhisperKey ? 'Key configured' : 'Enter OpenAI key...'}
-                  />
-                </div>
-                <PrimaryButton onClick={handleSaveWhisperKey} disabled={!whisperKey}>
-                  Save
-                </PrimaryButton>
+            <p style={{ fontSize: 12, color: '#6B7280', margin: '0 0 10px 0' }}>
+              Gemini handles transcription by default. Add an OpenAI API key only if you want Whisper as a fallback when Gemini transcription fails.
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <KeyInput
+                  value={whisperKey}
+                  onChange={setWhisperKey}
+                  placeholder={config.hasWhisperKey ? 'Whisper fallback key configured' : 'Enter OpenAI key for Whisper fallback...'}
+                />
               </div>
-            )}
+              <PrimaryButton onClick={handleSaveWhisperKey} disabled={!whisperKey}>
+                Save
+              </PrimaryButton>
+            </div>
           </div>
         </Card>
 
-        {/* Gemini Vision Backend — only shown when provider is gemini */}
-        {provider === 'gemini' && (
-          <Card>
-            <CardHeader
-              title="Sally Vision Backend"
-              description="Cloud Run URL for Gemini screen interpretation (optional — falls back to direct API)"
-              indicator={config.geminiBackendUrl ? 'green' : 'gray'}
+        <Card>
+          <CardHeader
+            title="Sally Vision Backend"
+            description="Cloud Run URL for Gemini screen interpretation (optional — falls back to direct Gemini API calls)."
+            indicator={config.geminiBackendUrl ? 'green' : 'gray'}
+          />
+          <div style={{ marginBottom: 10 }}>
+            <input
+              type="text"
+              value={geminiBackendUrl}
+              onChange={(e) => setGeminiBackendUrl(e.target.value)}
+              placeholder="https://sally-backend-xxx.run.app"
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                borderRadius: 8,
+                border: '1px solid #E8E8EC',
+                background: '#fff',
+                color: '#1a1a1e',
+                fontSize: 13,
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+              onFocus={(e) => { e.target.style.borderColor = '#2563EB'; }}
+              onBlur={(e) => { e.target.style.borderColor = '#E8E8EC'; }}
             />
-            <div style={{ marginBottom: 10 }}>
-              <input
-                type="text"
-                value={geminiBackendUrl || config.geminiBackendUrl}
-                onChange={(e) => setGeminiBackendUrl(e.target.value)}
-                placeholder={config.geminiBackendUrl || 'https://sally-backend-xxx.run.app'}
-                style={{
-                  width: '100%',
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  border: '1px solid #E8E8EC',
-                  background: '#fff',
-                  color: '#1a1a1e',
-                  fontSize: 13,
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
-                onFocus={(e) => { e.target.style.borderColor = '#2563EB'; }}
-                onBlur={(e) => { e.target.style.borderColor = '#E8E8EC'; }}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <PrimaryButton onClick={handleSaveGeminiBackendUrl} disabled={!geminiBackendUrl}>
-                Save URL
-              </PrimaryButton>
-              {config.geminiBackendUrl && (
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <PrimaryButton onClick={handleSaveGeminiBackendUrl} disabled={!backendUrlChanged}>
+              Save URL
+            </PrimaryButton>
+            {config.geminiBackendUrl && (
+              <>
                 <SecondaryButton onClick={() => checkBackendHealth()} disabled={backendHealth === 'checking'}>
                   {backendHealth === 'checking' ? 'Checking...' : 'Test Connection'}
                 </SecondaryButton>
-              )}
-            </div>
-            {config.geminiBackendUrl && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: '50%',
-                    background:
-                      backendHealth === 'ok' ? '#22C55E' :
-                      backendHealth === 'error' ? '#DC2626' :
-                      backendHealth === 'checking' ? '#CA8A04' : '#D1D5DB',
-                  }}
-                />
-                <span style={{
-                  fontSize: 11,
-                  color:
-                    backendHealth === 'ok' ? '#16A34A' :
-                    backendHealth === 'error' ? '#DC2626' :
-                    backendHealth === 'checking' ? '#CA8A04' : '#6B7280',
-                }}>
-                  {backendHealth === 'ok' ? 'Backend is live' :
-                   backendHealth === 'error' ? 'Backend unreachable' :
-                   backendHealth === 'checking' ? 'Checking...' :
-                   'Backend configured'}
-                </span>
-              </div>
+                <SecondaryButton onClick={handleClearGeminiBackendUrl}>
+                  Clear URL
+                </SecondaryButton>
+              </>
             )}
-          </Card>
-        )}
+          </div>
+          {config.geminiBackendUrl && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  background:
+                    backendHealth === 'ok' ? '#22C55E' :
+                    backendHealth === 'error' ? '#DC2626' :
+                    backendHealth === 'checking' ? '#CA8A04' : '#D1D5DB',
+                }}
+              />
+              <span style={{
+                fontSize: 11,
+                color:
+                  backendHealth === 'ok' ? '#16A34A' :
+                  backendHealth === 'error' ? '#DC2626' :
+                  backendHealth === 'checking' ? '#CA8A04' : '#6B7280',
+              }}>
+                {backendHealth === 'ok' ? 'Backend is live' :
+                 backendHealth === 'error' ? 'Backend unreachable' :
+                 backendHealth === 'checking' ? 'Checking...' :
+                 'Backend configured'}
+              </span>
+            </div>
+          )}
+        </Card>
 
         {/* Getting Started */}
         <Card style={{ background: 'rgba(37,99,235,0.04)', borderColor: 'rgba(37,99,235,0.15)' }}>
           <CardHeader title="Getting Started" />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {[
-              { num: '1', text: 'Hold Right Option to speak a command' },
+              { num: '1', text: `Hold ${pushToTalkKeyLabel} to speak a command` },
               { num: '2', text: 'Release to send your command' },
               { num: '3', text: 'Say "cancel" to stop the current action' },
             ].map((step) => (

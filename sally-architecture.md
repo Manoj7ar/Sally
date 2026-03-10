@@ -557,6 +557,8 @@ stateDiagram-v2
 
 ## 13. Provider System — Multi-LLM Architecture
 
+Current implementation note: Sally now ships as a Gemini-first desktop app. OpenAI is only used as an optional Whisper fallback for transcription, and there is no separate Anthropic/OpenAI task-execution path in the UI anymore.
+
 Sally supports multiple AI providers for flexibility:
 
 | Provider | STT | Vision | Browser Actions |

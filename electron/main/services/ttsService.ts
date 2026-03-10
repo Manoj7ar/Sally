@@ -24,6 +24,11 @@ class TtsService {
         this.pendingId = null;
       }
     });
+
+    ipcMain.on('sally:tts-playback-error', (_event, data: { id: string; message: string }) => {
+      if (!data?.id) return;
+      console.error('[TTS] Renderer playback error for', data.id, '-', data.message);
+    });
   }
 
   async speak(text: string): Promise<void> {
@@ -111,11 +116,18 @@ class TtsService {
       const audioBase64 = audioBuffer.toString('base64');
       const id = `tts-${++nextId}`;
 
-      // Send audio to renderer for playback and wait for completion
+      // Send audio to the Sally bar renderer for playback and wait for completion.
       await new Promise<void>((resolve) => {
         this.pendingResolve = resolve;
         this.pendingId = id;
-        windowManager.broadcastToAll('sally:tts-audio', { audioBase64, id });
+        void this.sendAudioToSallyBar({ audioBase64, id }).catch((error) => {
+          console.error('[TTS] Failed to deliver audio to Sally bar:', error);
+          if (this.pendingId === id && this.pendingResolve) {
+            this.pendingResolve();
+            this.pendingResolve = null;
+            this.pendingId = null;
+          }
+        });
 
         // Safety timeout in case renderer never responds
         setTimeout(() => {
@@ -130,6 +142,25 @@ class TtsService {
     } catch (error) {
       console.error('[TTS] Failed to synthesize speech:', error);
     }
+  }
+
+  private async sendAudioToSallyBar(data: { audioBase64: string; id: string }): Promise<void> {
+    const sallyBar = windowManager.showSallyBar();
+    if (sallyBar.isDestroyed()) {
+      throw new Error('Sally bar window is unavailable');
+    }
+
+    if (sallyBar.webContents.isLoadingMainFrame()) {
+      await new Promise<void>((resolve) => {
+        sallyBar.webContents.once('did-finish-load', () => resolve());
+      });
+    }
+
+    if (sallyBar.isDestroyed()) {
+      throw new Error('Sally bar window was destroyed before audio delivery');
+    }
+
+    sallyBar.webContents.send('sally:tts-audio', data);
   }
 }
 

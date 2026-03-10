@@ -44,8 +44,7 @@ const stateColors: Record<SallyState, string> = {
   awaiting_response: '#38BDF8',
 };
 
-const stateLabels: Record<SallyState, string> = {
-  idle: 'Hold Right Alt to Talk',
+const stateLabels: Record<Exclude<SallyState, 'idle'>, string> = {
   listening: '',
   processing: 'Transcribing...',
   acting: 'Working...',
@@ -66,6 +65,7 @@ const LIVE_PREVIEW_INTERVAL_MS = 600;
 const MIN_LIVE_PREVIEW_BYTES = 1500;
 
 export default function SallyBarWindow() {
+  const pushToTalkKeyLabel = ipc.getPlatform() === 'darwin' ? 'Right Option' : 'Right Alt';
   const [state, setState] = useState<SallyState>('idle');
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -116,7 +116,6 @@ export default function SallyBarWindow() {
   // function body. The useEffect below updates the ref after every render (no deps
   // array) so it runs after all variables are declared, avoiding the TDZ crash.
   const soundsRef = useRef<{ playCompleteChime: () => void; playErrorChime: () => void }>({ playCompleteChime: () => {}, playErrorChime: () => {} });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     soundsRef.current = { playCompleteChime, playErrorChime };
   });
@@ -184,50 +183,77 @@ export default function SallyBarWindow() {
 
   // TTS audio playback via IPC — receives base64 MP3 from main process, plays via HTML5 Audio
   useEffect(() => {
-    let currentAudio: HTMLAudioElement | null = null;
+    let currentPlayback: { context: AudioContext; source: AudioBufferSourceNode } | null = null;
+    let playbackToken = 0;
+
+    const stopPlayback = () => {
+      playbackToken += 1;
+      if (!currentPlayback) return;
+      try {
+        currentPlayback.source.stop();
+      } catch {
+        // Ignore stop errors if playback already ended.
+      }
+      void currentPlayback.context.close();
+      currentPlayback = null;
+    };
 
     const unsubAudio = ipc.subscribe('sally:tts-audio', (data) => {
-      // Stop any currently playing audio before starting new clip
-      if (currentAudio) {
-        currentAudio.pause();
-        currentAudio = null;
-      }
+      stopPlayback();
 
       const { audioBase64, id } = data;
-      const audio = new Audio(`data:audio/mpeg;base64,${audioBase64}`);
-      currentAudio = audio;
+      const token = playbackToken;
+      void (async () => {
+        try {
+          const binary = window.atob(audioBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i += 1) {
+            bytes[i] = binary.charCodeAt(i);
+          }
 
-      audio.onended = () => {
-        currentAudio = null;
-        window.electron.send('sally:tts-playback-complete', { id });
-      };
+          const context = new AudioContext();
+          await context.resume();
+          if (token !== playbackToken) {
+            void context.close();
+            return;
+          }
+          const decoded = await context.decodeAudioData(bytes.buffer.slice(0));
+          if (token !== playbackToken) {
+            void context.close();
+            return;
+          }
+          const source = context.createBufferSource();
+          source.buffer = decoded;
+          source.connect(context.destination);
+          currentPlayback = { context, source };
 
-      audio.onerror = () => {
-        console.error('[TTS] Audio playback error');
-        currentAudio = null;
-        window.electron.send('sally:tts-playback-complete', { id });
-      };
+          source.onended = () => {
+            void context.close();
+            currentPlayback = null;
+            window.electron.send('sally:tts-playback-complete', { id });
+          };
 
-      audio.play().catch((err) => {
-        console.error('[TTS] Failed to play audio:', err);
-        currentAudio = null;
-        window.electron.send('sally:tts-playback-complete', { id });
-      });
+          source.start(0);
+        } catch (err) {
+          console.error('[TTS] Failed to play decoded audio:', err);
+          ipc.send('sally:tts-playback-error', {
+            id,
+            message: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+          });
+          stopPlayback();
+          window.electron.send('sally:tts-playback-complete', { id });
+        }
+      })();
     });
 
     const unsubStop = ipc.subscribe('sally:tts-stop', () => {
-      if (currentAudio) {
-        currentAudio.pause();
-        currentAudio = null;
-      }
+      stopPlayback();
     });
 
     return () => {
       unsubAudio();
       unsubStop();
-      if (currentAudio) {
-        currentAudio.pause();
-      }
+      stopPlayback();
     };
   }, []);
 
@@ -589,7 +615,13 @@ export default function SallyBarWindow() {
 
   const isBusy = state !== 'idle' && state !== 'awaiting_response';
   const isIdlePrompt = state === 'idle' && !isComposerOpen && !isMicMuted;
-  const statusLabel = isMicMuted ? 'Mic muted' : isRecording ? '' : stateLabels[state];
+  const statusLabel = isMicMuted
+    ? 'Mic muted'
+    : isRecording
+      ? ''
+      : state === 'idle'
+        ? `Hold ${pushToTalkKeyLabel} to Talk`
+        : stateLabels[state];
   const transcriptPlaceholder = isRecording
     ? 'Listening for speech...'
     : state === 'processing'

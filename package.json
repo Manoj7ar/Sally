@@ -5,13 +5,21 @@
   "type": "module",
   "description": "Use any website with just your voice - accessibility agent for blind users",
   "main": "dist-electron/electron/main/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
+    "postinstall": "electron-builder install-app-deps",
     "dev": "npm run build:electron && concurrently -k \"vite\" \"npm run electron:dev\"",
     "electron:dev": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
     "build:electron": "tsc -p electron/tsconfig.json && tsc -p electron/preload/tsconfig.json && node -e \"require('fs').mkdirSync('dist-electron/electron/preload',{recursive:true});require('fs').writeFileSync('dist-electron/electron/preload/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\"",
     "build": "npm run build:electron && vite build",
     "preview": "npm run build && electron .",
-    "build:check": "npm run build:electron"
+    "lint": "eslint src electron shared scripts vite.config.ts eslint.config.js",
+    "typecheck": "npm run build:electron && tsc -b",
+    "verify:desktop": "tsx scripts/desktop-doctor.ts",
+    "build:check": "npm run build:electron",
+    "check": "npm run lint && npm run typecheck && npm run verify:desktop && npm run build && npm --prefix sally-app run lint && npm --prefix sally-app run build && node --check sally-backend/index.js"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",
@@ -27,7 +35,7 @@
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "@types/uuid": "^10.0.0",
-"@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
     "electron": "^33.3.1",

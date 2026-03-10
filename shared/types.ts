@@ -1,5 +1,6 @@
 // Sally shared types
 
+export type SallyProvider = 'gemini';
 export type SallyState = 'idle' | 'listening' | 'processing' | 'acting' | 'speaking' | 'awaiting_response';
 export type SallyBarLayout = 'idle' | 'compact' | 'composer' | 'transcript';
 
@@ -17,7 +18,7 @@ export interface ChatMessage {
 }
 
 export interface SallyConfig {
-  provider: string;
+  provider: SallyProvider;
   hasProviderKey: boolean;
   hasElevenLabsKey: boolean;
   hasWhisperKey: boolean;
@@ -35,10 +36,10 @@ export interface AudioDeviceInfo {
 export interface IpcChannels {
   // Config
   'sally:get-config': { request: void; response: SallyConfig; broadcast: never };
-  'sally:set-provider': { request: string; response: void; broadcast: never };
-  'sally:get-provider': { request: void; response: string; broadcast: never };
-  'sally:set-api-key': { request: { provider: string; key: string }; response: void; broadcast: never };
-  'sally:test-api-key': { request: { provider: string; key: string }; response: boolean; broadcast: never };
+  'sally:set-provider': { request: SallyProvider; response: void; broadcast: never };
+  'sally:get-provider': { request: void; response: SallyProvider; broadcast: never };
+  'sally:set-api-key': { request: { provider: SallyProvider; key: string }; response: void; broadcast: never };
+  'sally:test-api-key': { request: { provider: SallyProvider; key: string }; response: boolean; broadcast: never };
   'sally:clear-api-key': { request: void; response: void; broadcast: never };
   'sally:set-elevenlabs-key': { request: string; response: void; broadcast: never };
   'sally:get-elevenlabs-key-status': { request: void; response: boolean; broadcast: never };
@@ -74,6 +75,7 @@ export interface IpcChannels {
   'sally:chat': { request: never; response: never; broadcast: ChatMessage };
   'sally:tts-audio': { request: never; response: never; broadcast: { audioBase64: string; id: string } };
   'sally:tts-stop': { request: never; response: never; broadcast: void };
+  'sally:tts-playback-error': { request: { id: string; message: string }; response: never; broadcast: never };
   'sally:mic-muted-changed': { request: never; response: never; broadcast: { muted: boolean } };
 
   // Hotkey events (main -> sally bar)

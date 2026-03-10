@@ -11,6 +11,7 @@ const MIN_HOLD_DURATION = 300;
 const MAX_HOLD_DURATION_MS = 30000;
 const RESTART_GUARD_MS = 160;
 const WINDOWS_RIGHT_ALT_VK = 0xA5;
+const PUSH_TO_TALK_LABEL = process.platform === 'darwin' ? 'Right Option' : 'Right Alt';
 
 function createWindowsReleaseWatcherCommand(virtualKey: number): string {
   const script = `
@@ -42,24 +43,24 @@ class HotkeyManager {
   private releaseWatcher: ChildProcess | null = null;
 
   register(): void {
-    console.log('Registering push-to-talk hotkey (Right Option)');
+    console.log(`Registering push-to-talk hotkey (${PUSH_TO_TALK_LABEL})`);
 
     uIOhook.on('keydown', (e) => {
       if (!this.isPushToTalkKey(e)) return;
 
       const now = Date.now();
       if (now - this.lastReleaseTime <= RESTART_GUARD_MS) {
-        console.warn('[Hotkey] Ignoring right Option bounce immediately after release');
+        console.warn(`[Hotkey] Ignoring ${PUSH_TO_TALK_LABEL} bounce immediately after release`);
         return;
       }
 
       if (this.isHotkeyPressed) {
-        console.warn('[Hotkey] Ignoring duplicate right Option keydown while already pressed');
+        console.warn(`[Hotkey] Ignoring duplicate ${PUSH_TO_TALK_LABEL} keydown while already pressed`);
         return;
       }
 
       if (microphoneManager.isMuted()) {
-        console.log('[Hotkey] Right Option pressed while mic is muted');
+        console.log(`[Hotkey] ${PUSH_TO_TALK_LABEL} pressed while mic is muted`);
         windowManager.showSallyBar();
         return;
       }
@@ -84,7 +85,7 @@ class HotkeyManager {
     try {
       uIOhook.start();
       this.isStarted = true;
-      console.log('Push-to-talk hotkey registered (Right Option)');
+      console.log(`Push-to-talk hotkey registered (${PUSH_TO_TALK_LABEL})`);
     } catch (error) {
       console.error('Failed to start uIOhook:', error);
     }
@@ -110,14 +111,14 @@ class HotkeyManager {
   }
 
   private onKeyDown(): void {
-    console.log('[Hotkey] Right Option pressed - start recording');
+    console.log(`[Hotkey] ${PUSH_TO_TALK_LABEL} pressed - start recording`);
     ttsService.stop();
     sessionManager.setListening();
     this.sendHotkeyMessage('hotkey:start-recording', { ensureVisible: true, syncState: true });
   }
 
   private onKeyUp(): void {
-    console.log('[Hotkey] Right Option released - stop recording');
+    console.log(`[Hotkey] ${PUSH_TO_TALK_LABEL} released - stop recording`);
     // Immediately transition to processing state so the UI updates instantly
     sessionManager.setState('processing');
     this.sendHotkeyMessage('hotkey:stop-recording');
