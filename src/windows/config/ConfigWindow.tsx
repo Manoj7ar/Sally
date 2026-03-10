@@ -343,7 +343,7 @@ export default function ConfigWindow() {
         className="scrollbar-hide"
         style={{ flex: 1, overflowY: 'auto', padding: '16px 24px 24px', minHeight: 0 }}
       >
-        {/* AI Provider */}
+        {/* AI Model */}
         <Card>
           <CardHeader
             title="AI Model"

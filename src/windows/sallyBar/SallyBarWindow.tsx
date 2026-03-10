@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { ipc } from '../../lib/ipc';
 import WaveformView from './components/WaveformView';
 import type { SallyBarLayout, SallyState } from '../../../shared/types';
-import logoSrc from '../../../logo-sally.png';
+import logoSrc from '../../../assets/branding/sally-logo.png';
 
 const SendIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none">

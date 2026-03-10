@@ -19,7 +19,7 @@
     "typecheck": "npm run build:electron && tsc -b",
     "verify:desktop": "tsx scripts/desktop-doctor.ts",
     "build:check": "npm run build:electron",
-    "check": "npm run lint && npm run typecheck && npm run verify:desktop && npm run build && npm --prefix sally-app run lint && npm --prefix sally-app run build && node --check sally-backend/index.js"
+    "check": "npm run lint && npm run typecheck && npm run verify:desktop && npm run build && node --check sally-backend/index.js"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",
@@ -63,8 +63,8 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.utilities",
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlements": "config/macos/entitlements.mac.plist",
+      "entitlementsInherit": "config/macos/entitlements.mac.plist"
     },
     "win": {
       "target": "nsis"

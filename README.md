@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./sally-logo.png" alt="Sally logo" width="220" />
+  <img src="./assets/branding/sally-logo.png" alt="Sally logo" width="220" />
 </p>
 
 <h1 align="center">Sally — The AI Screen Reader That Sees, Understands, and Acts</h1>
@@ -82,6 +82,8 @@ graph TD
     GEMINI -.->|direct fallback| SDK[google/genai SDK]
 ```
 
+Want the full system walkthrough? See [docs/architecture.md](./docs/architecture.md) for the detailed architecture, data flow, and implementation notes.
+
 ## Google Cloud Architecture
 
 | Component | Service | Purpose |
@@ -110,7 +112,7 @@ The Cloud Run backend receives a base64 PNG screenshot + user instruction, calls
 - **Smart selector fallbacks** — CSS → visible text → ARIA role → label → placeholder
 - **Multi-step task completion** — Handles complex tasks autonomously across multiple pages
 - **Floating assistant bar** — Minimal, non-intrusive UI with live state feedback
-- **Configurable settings** — Manage API keys, providers, audio from the settings window
+- **Configurable settings** — Manage Gemini, Whisper fallback, backend URL, and audio from the settings window
 
 ## Getting Started
 
@@ -122,8 +124,6 @@ You'll need API keys for:
 - Gemini is required for vision, browser automation, and the default speech-to-text path.
 - ElevenLabs is required for text-to-speech.
 - OpenAI is optional and only used for Whisper fallback transcription.
-- **Gemini** (Google AI Studio) — for vision, AI provider, and speech-to-text transcription
-- **ElevenLabs** — for text-to-speech
 
 ### Desktop App
 
@@ -270,8 +270,10 @@ Verifies: Text-based instruction path
 | "require is not defined" | Run `npm run build:electron` before `npm run dev` |
 | Browser won't launch | Close all Chrome windows first (Chrome locks its profile) |
 | No audio / TTS silent | Check ElevenLabs key in Settings, verify speakers are on |
-| "Gemini API key" error | Add key in Settings > AI Provider > Gemini > Save |
+| "Gemini API key" error | Add a key in Settings > AI Model > Gemini API Key, or configure the Sally Vision Backend URL |
 | Hotkey not working | Restart the app; on macOS grant Accessibility permission |
+
+Settings note: the current desktop UI exposes Gemini under `AI Model`, with an optional Whisper fallback key in the Voice section.
 
 For a full repo health check, run `npm run check`.
 
@@ -285,11 +287,21 @@ For a full repo health check, run `npm run check`.
 | **Browser** | **Playwright** (`playwright-core`) | Direct browser automation in agentic loop |
 | **Desktop** | Electron + React + TypeScript | Cross-platform desktop app |
 | **Build** | Vite | Fast frontend bundling |
-| **STT** | **Gemini 2.5 Flash** | Speech-to-text transcription (Whisper fallback for non-Gemini providers) |
+| **STT** | **Gemini 2.5 Flash** | Speech-to-text transcription with optional OpenAI Whisper fallback |
 | **TTS** | ElevenLabs | Neural text-to-speech |
 | **Hotkey** | uiohook-napi | Global push-to-talk |
 
 ## Repository Structure
+
+Current repo layout after cleanup:
+- `electron/` contains the Electron main process, preload bridge, and desktop orchestration.
+- `src/` contains the desktop renderer UI.
+- `sally-backend/` is the optional Cloud Run Gemini vision backend.
+- `shared/` contains cross-process TypeScript types.
+- `scripts/` contains repo-level verification helpers.
+- `assets/branding/` contains the shared Sally logo asset.
+- `config/macos/` contains the macOS packaging entitlements file.
+- `docs/architecture.md` contains the detailed architecture write-up.
 
 ```text
 .
@@ -308,7 +320,8 @@ For a full repo health check, run `npm run check`.
 │   ├── Dockerfile         # Cloud Run container config
 │   └── deploy.sh          # One-command Cloud Run deployment
 ├── shared/                # Shared TypeScript types
-├── sally-architecture.md  # Detailed system architecture document
+├── docs/                  # Architecture and supporting documentation
+│   └── architecture.md   # Detailed system architecture document
 └── README.md
 ```
 

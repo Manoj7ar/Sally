@@ -5,6 +5,7 @@ dist-electron
 .env
 .env.local
 .env*.local
+.claude/
 *.dmg
 *.AppImage
 *.exe

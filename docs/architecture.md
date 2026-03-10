@@ -555,19 +555,17 @@ stateDiagram-v2
 
 ---
 
-## 13. Provider System — Multi-LLM Architecture
+## 13. Provider System — Gemini-First Architecture
 
-Current implementation note: Sally now ships as a Gemini-first desktop app. OpenAI is only used as an optional Whisper fallback for transcription, and there is no separate Anthropic/OpenAI task-execution path in the UI anymore.
+Sally is a Gemini-first desktop app. OpenAI is only used as an optional Whisper fallback for transcription, and there is no separate Anthropic/OpenAI task-execution path in the UI.
 
-Sally supports multiple AI providers for flexibility:
+| Capability | Provider |
+|------------|----------|
+| Vision + browser actions | **Gemini 2.5 Flash** |
+| Default speech-to-text | **Gemini 2.5 Flash** |
+| Optional transcription fallback | **OpenAI Whisper** |
 
-| Provider | STT | Vision | Browser Actions |
-|----------|-----|--------|-----------------|
-| **Gemini** (default) | Gemini 2.5 Flash | Gemini 2.5 Flash | Playwright (via Gemini agentic loop) |
-| **Anthropic** | Whisper | — | — |
-| **OpenAI** | Whisper | — | — |
-
-When using Gemini (recommended), all AI capabilities use a single API key:
+When using Gemini (recommended), the core AI capabilities use a single API key:
 - Speech-to-text transcription
 - Screenshot interpretation (vision)
 - Action planning for the agentic loop
