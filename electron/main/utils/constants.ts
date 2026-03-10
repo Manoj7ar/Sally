@@ -33,4 +33,5 @@ export const STORE_KEYS = {
   MIC_MUTED: 'micMuted',
   GEMINI_API_KEY: 'geminiApiKey',
   GEMINI_BACKEND_URL: 'geminiBackendUrl',
+  AUTO_RESEARCH_SCREEN_QUESTIONS: 'autoResearchScreenQuestions',
 } as const;

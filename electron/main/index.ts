@@ -8,7 +8,7 @@ import { app, systemPreferences } from 'electron';
 import { windowManager, setQuitting } from './windowManager.js';
 import { registerIpcHandlers } from './ipcHandlers.js';
 import { sessionManager } from './managers/sessionManager.js';
-import { playwrightService } from './services/playwrightService.js';
+import { browserService } from './services/browserService.js';
 import { hotkeyManager } from './hotkeyManager.js';
 
 // Prevent multiple instances
@@ -61,6 +61,6 @@ app.on('before-quit', () => {
 
 app.on('will-quit', async () => {
   hotkeyManager.unregisterAll();
-  await playwrightService.close();
+  await browserService.close();
   windowManager.destroyAll();
 });

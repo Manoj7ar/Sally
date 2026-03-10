@@ -17,6 +17,7 @@ export function registerIpcHandlers(): void {
       hasWhisperKey: apiKeyManager.hasWhisperKey(),
       hasGeminiKey: apiKeyManager.hasGeminiApiKey(),
       geminiBackendUrl: apiKeyManager.getGeminiBackendUrl(),
+      autoResearchScreenQuestions: apiKeyManager.getAutoResearchScreenQuestions(),
       audioDevice: store.get(STORE_KEYS.AUDIO_DEVICE) || 'default',
     };
   });
@@ -73,6 +74,14 @@ export function registerIpcHandlers(): void {
     return apiKeyManager.getGeminiBackendUrl();
   });
 
+  ipcMain.handle('sally:set-auto-research-screen-questions', (_e, enabled: boolean) => {
+    apiKeyManager.setAutoResearchScreenQuestions(enabled);
+  });
+
+  ipcMain.handle('sally:get-auto-research-screen-questions', () => {
+    return apiKeyManager.getAutoResearchScreenQuestions();
+  });
+
   // ── Audio ──
 
   ipcMain.handle('sally:set-audio-device', (_e, deviceId: string) => {
@@ -85,12 +94,16 @@ export function registerIpcHandlers(): void {
 
   // ── Voice Flow ──
 
-  ipcMain.handle('sally:transcribe', async (_e, data: { audioBase64: string; mimeType: string }) => {
-    return sessionManager.handleTranscription(data.audioBase64, data.mimeType);
+  ipcMain.handle('sally:transcribe', async (_e, data: { audioBase64: string; mimeType: string; durationMs?: number }) => {
+    return sessionManager.handleTranscription(data.audioBase64, data.mimeType, data.durationMs);
   });
 
-  ipcMain.handle('sally:preview-transcription', async (_e, data: { audioBase64: string; mimeType: string }) => {
-    return sessionManager.previewTranscription(data.audioBase64, data.mimeType);
+  ipcMain.handle('sally:preview-transcription', async (_e, data: { audioBase64: string; mimeType: string; durationMs?: number }) => {
+    return sessionManager.previewTranscription(data.audioBase64, data.mimeType, data.durationMs);
+  });
+
+  ipcMain.handle('sally:handle-silence', async (_e, data: { durationMs?: number; peakLevel?: number; averageLevel?: number }) => {
+    await sessionManager.handleSilence(data);
   });
 
   ipcMain.handle('sally:send-instruction', async (_e, instruction: string) => {

@@ -154,3 +154,32 @@ export function findBrowserLaunchTarget(): BrowserLaunchTarget | null {
 
   return null;
 }
+
+export function findChromeLaunchTarget(): BrowserLaunchTarget | null {
+  const candidates = getBrowserCandidates().filter((candidate) => candidate.channel === 'chrome');
+
+  for (const candidate of candidates) {
+    const executablePath = existingPath(candidate.executablePaths);
+    if (!executablePath) continue;
+
+    return {
+      label: candidate.label,
+      executablePath,
+      userDataDir: existingPath(candidate.profilePaths),
+      channel: candidate.channel,
+    };
+  }
+
+  for (const candidate of candidates) {
+    const userDataDir = existingPath(candidate.profilePaths);
+    if (!userDataDir) continue;
+
+    return {
+      label: candidate.label,
+      userDataDir,
+      channel: candidate.channel,
+    };
+  }
+
+  return null;
+}

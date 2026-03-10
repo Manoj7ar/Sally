@@ -236,6 +236,10 @@ class WindowManager {
     this.syncBorderOverlayBounds();
   }
 
+  getBorderOverlayDisplayId(): number {
+    return this.resolveBorderOverlayDisplay().id;
+  }
+
   showBorderOverlay(): void {
     const bounds = this.getBorderOverlayBounds();
 

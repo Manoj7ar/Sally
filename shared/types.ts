@@ -24,6 +24,7 @@ export interface SallyConfig {
   hasWhisperKey: boolean;
   hasGeminiKey: boolean;
   geminiBackendUrl: string;
+  autoResearchScreenQuestions: boolean;
   audioDevice: string;
 }
 
@@ -49,12 +50,15 @@ export interface IpcChannels {
   'sally:get-gemini-key-status': { request: void; response: boolean; broadcast: never };
   'sally:set-gemini-backend-url': { request: string; response: void; broadcast: never };
   'sally:get-gemini-backend-url': { request: void; response: string; broadcast: never };
+  'sally:set-auto-research-screen-questions': { request: boolean; response: void; broadcast: never };
+  'sally:get-auto-research-screen-questions': { request: void; response: boolean; broadcast: never };
   'sally:set-audio-device': { request: string; response: void; broadcast: never };
   'sally:get-audio-device': { request: void; response: string; broadcast: never };
 
   // Voice flow
-  'sally:transcribe': { request: { audioBase64: string; mimeType: string }; response: string; broadcast: never };
-  'sally:preview-transcription': { request: { audioBase64: string; mimeType: string }; response: string; broadcast: never };
+  'sally:transcribe': { request: { audioBase64: string; mimeType: string; durationMs?: number }; response: string; broadcast: never };
+  'sally:preview-transcription': { request: { audioBase64: string; mimeType: string; durationMs?: number }; response: string; broadcast: never };
+  'sally:handle-silence': { request: { durationMs?: number; peakLevel?: number; averageLevel?: number }; response: void; broadcast: never };
   'sally:send-instruction': { request: string; response: void; broadcast: never };
   'sally:cancel': { request: void; response: void; broadcast: never };
   'sally:get-mic-muted': { request: void; response: boolean; broadcast: never };

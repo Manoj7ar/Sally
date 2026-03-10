@@ -1,21 +1,42 @@
 // Screenshot service - captures screen via Electron desktopCapturer
-import { desktopCapturer } from 'electron';
+import { desktopCapturer, screen } from 'electron';
 
 class ScreenshotService {
-  async captureScreen(): Promise<string> {
+  private resolveTargetDisplay(displayId?: number | null) {
+    if (displayId !== undefined && displayId !== null) {
+      const matchedDisplay = screen.getAllDisplays().find((display) => display.id === displayId);
+      if (matchedDisplay) {
+        return matchedDisplay;
+      }
+    }
+
+    const cursorPoint = screen.getCursorScreenPoint();
+    return screen.getDisplayNearestPoint(cursorPoint) || screen.getPrimaryDisplay();
+  }
+
+  async captureScreen(displayId?: number | null): Promise<string> {
+    const targetDisplay = this.resolveTargetDisplay(displayId);
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: 1920, height: 1080 },
+      thumbnailSize: {
+        width: targetDisplay.bounds.width,
+        height: targetDisplay.bounds.height,
+      },
     });
 
     if (!sources || sources.length === 0) {
       throw new Error('No screen sources available for capture');
     }
 
-    // Use the primary screen (first source)
-    const primaryScreen = sources[0];
-    const base64 = primaryScreen.thumbnail.toPNG().toString('base64');
-    console.log('[Screenshot] Captured screen, PNG size:', base64.length, 'chars');
+    const displayIdString = String(targetDisplay.id);
+    const selectedSource = sources.find((source) => source.display_id === displayIdString) || sources[0];
+    const base64 = selectedSource.thumbnail.toPNG().toString('base64');
+    console.log('[Screenshot] Captured display:', {
+      requestedDisplayId: displayIdString,
+      sourceDisplayId: selectedSource.display_id,
+      sourceName: selectedSource.name,
+      pngChars: base64.length,
+    });
     return base64;
   }
 }

@@ -186,6 +186,7 @@ export default function ConfigWindow() {
   const [elevenLabsKey, setElevenLabsKey] = useState('');
   const [whisperKey, setWhisperKey] = useState('');
   const [geminiBackendUrl, setGeminiBackendUrl] = useState('');
+  const [autoResearchScreenQuestions, setAutoResearchScreenQuestions] = useState(false);
   const [backendHealth, setBackendHealth] = useState<{
     status: 'idle' | 'configured' | 'checking' | 'connected' | 'failed';
     model: string | null;
@@ -223,6 +224,7 @@ export default function ConfigWindow() {
       const cfg = await ipc.invoke('sally:get-config');
       setConfig(cfg);
       setGeminiBackendUrl(cfg.geminiBackendUrl);
+      setAutoResearchScreenQuestions(cfg.autoResearchScreenQuestions);
       if (cfg.geminiBackendUrl.trim()) {
         setBackendHealth({ status: 'configured', model: null });
         void checkBackendHealth(cfg.geminiBackendUrl);
@@ -290,6 +292,13 @@ export default function ConfigWindow() {
     setGeminiBackendUrl('');
     setBackendHealth({ status: 'idle', model: null });
     loadConfig();
+  };
+
+  const handleToggleAutoResearchScreenQuestions = async () => {
+    const nextValue = !autoResearchScreenQuestions;
+    setAutoResearchScreenQuestions(nextValue);
+    await ipc.invoke('sally:set-auto-research-screen-questions', nextValue);
+    await loadConfig();
   };
 
   if (!config) {
@@ -540,6 +549,67 @@ export default function ConfigWindow() {
               </span>
             </div>
           )}
+        </Card>
+
+        <Card>
+          <CardHeader
+            title="Screen Questions"
+            description="Let Sally answer open-ended questions about what is visible on screen. Auto research opens the browser only when a screen question explicitly asks for more information."
+            indicator={autoResearchScreenQuestions ? 'green' : 'gray'}
+          />
+          <button
+            onClick={handleToggleAutoResearchScreenQuestions}
+            style={{
+              width: '100%',
+              padding: '12px 14px',
+              borderRadius: 10,
+              border: '1px solid #E8E8EC',
+              background: autoResearchScreenQuestions ? 'rgba(34,197,94,0.08)' : '#fff',
+              color: '#1a1a1e',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              textAlign: 'left',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                Auto Research for Screen Questions
+              </div>
+              <div style={{ fontSize: 12, color: '#6B7280' }}>
+                {autoResearchScreenQuestions
+                  ? 'When a visual question asks for more info, Sally can answer from the screenshot and then look it up on the web.'
+                  : 'Sally answers screen questions from the screenshot only and does not auto-open the browser.'}
+              </div>
+            </div>
+            <div
+              style={{
+                width: 42,
+                height: 24,
+                borderRadius: 999,
+                background: autoResearchScreenQuestions ? '#22C55E' : '#D1D5DB',
+                position: 'relative',
+                flexShrink: 0,
+                transition: 'background 0.15s',
+              }}
+            >
+              <div
+                style={{
+                  width: 18,
+                  height: 18,
+                  borderRadius: '50%',
+                  background: '#fff',
+                  position: 'absolute',
+                  top: 3,
+                  left: autoResearchScreenQuestions ? 21 : 3,
+                  transition: 'left 0.15s',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
+                }}
+              />
+            </div>
+          </button>
         </Card>
 
         {/* Getting Started */}

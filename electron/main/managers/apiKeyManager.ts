@@ -105,6 +105,16 @@ class ApiKeyManager {
     return store.get(STORE_KEYS.GEMINI_BACKEND_URL) || '';
   }
 
+  // ============ SCREEN QUESTION AUTO RESEARCH ============
+
+  setAutoResearchScreenQuestions(enabled: boolean): void {
+    store.set(STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS, enabled);
+  }
+
+  getAutoResearchScreenQuestions(): boolean {
+    return store.get(STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS) ?? false;
+  }
+
   // ============ GENERIC KEY METHODS (delegate by current provider) ============
 
   setApiKey(provider: SallyProvider, key: string): void {

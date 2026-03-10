@@ -61,8 +61,21 @@ const COMPOSER_BORDER = '1px solid rgba(255,255,255,0.05)';
 const COMPOSER_WIDTH = 360;
 const PILL_WIDTH = 280;
 const TRANSCRIPT_WIDTH = 360;
-const LIVE_PREVIEW_INTERVAL_MS = 600;
-const MIN_LIVE_PREVIEW_BYTES = 1500;
+const LIVE_PREVIEW_INTERVAL_MS = 1000;
+const MIN_LIVE_PREVIEW_BYTES = 6000;
+const MIN_LIVE_PREVIEW_DURATION_MS = 1500;
+const SILENCE_GUARD_MIN_DURATION_MS = 500;
+const SILENCE_GUARD_MAX_PEAK_LEVEL = 0.015;
+const SILENCE_GUARD_MAX_AVERAGE_LEVEL = 0.006;
+const AUDIO_BITS_PER_SECOND = 128000;
+const VOICE_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: { ideal: true },
+  noiseSuppression: { ideal: true },
+  autoGainControl: { ideal: true },
+  channelCount: { ideal: 1 },
+  sampleRate: { ideal: 48000 },
+  sampleSize: { ideal: 16 },
+};
 
 export default function SallyBarWindow() {
   const pushToTalkKeyLabel = ipc.getPlatform() === 'darwin' ? 'Right Option' : 'Right Alt';
@@ -82,6 +95,10 @@ export default function SallyBarWindow() {
   const livePreviewIntervalRef = useRef<number | null>(null);
   const livePreviewRequestInFlightRef = useRef(false);
   const livePreviewSessionRef = useRef(0);
+  const recordingStartedAtRef = useRef(0);
+  const peakSignalLevelRef = useRef(0);
+  const signalLevelTotalRef = useRef(0);
+  const signalLevelSamplesRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const isMicMutedRef = useRef(false);
@@ -89,6 +106,31 @@ export default function SallyBarWindow() {
   const syncLayout = useCallback(async (layout: SallyBarLayout) => {
     await ipc.invoke('window:set-pill-layout', { layout });
   }, []);
+
+  const resetSignalLevels = useCallback(() => {
+    peakSignalLevelRef.current = 0;
+    signalLevelTotalRef.current = 0;
+    signalLevelSamplesRef.current = 0;
+    setAudioLevel(0);
+  }, []);
+
+  const getSignalLevels = useCallback(() => {
+    const sampleCount = signalLevelSamplesRef.current;
+    const averageLevel = sampleCount > 0 ? signalLevelTotalRef.current / sampleCount : 0;
+    return {
+      peakLevel: peakSignalLevelRef.current,
+      averageLevel,
+    };
+  }, []);
+
+  const isSilentRecording = useCallback((durationMs: number) => {
+    if (durationMs < SILENCE_GUARD_MIN_DURATION_MS) {
+      return false;
+    }
+
+    const { peakLevel, averageLevel } = getSignalLevels();
+    return peakLevel <= SILENCE_GUARD_MAX_PEAK_LEVEL && averageLevel <= SILENCE_GUARD_MAX_AVERAGE_LEVEL;
+  }, [getSignalLevels]);
 
   useEffect(() => {
     isMicMutedRef.current = isMicMuted;
@@ -386,6 +428,9 @@ export default function SallyBarWindow() {
     const actualMimeType = recorder.mimeType || 'audio/webm';
     const blob = new Blob(audioChunksRef.current, { type: actualMimeType });
     if (blob.size < MIN_LIVE_PREVIEW_BYTES) return;
+    const durationMs = Math.max(Date.now() - recordingStartedAtRef.current, 0);
+    if (durationMs < MIN_LIVE_PREVIEW_DURATION_MS) return;
+    if (isSilentRecording(durationMs)) return;
 
     livePreviewRequestInFlightRef.current = true;
     try {
@@ -395,6 +440,7 @@ export default function SallyBarWindow() {
       const transcript = await ipc.invoke('sally:preview-transcription', {
         audioBase64: base64,
         mimeType: actualMimeType,
+        durationMs,
       });
 
       if (livePreviewSessionRef.current !== sessionId) return;
@@ -406,7 +452,7 @@ export default function SallyBarWindow() {
     } finally {
       livePreviewRequestInFlightRef.current = false;
     }
-  }, [blobToBase64]);
+  }, [blobToBase64, isSilentRecording]);
 
   const startLiveTranscriptPreview = useCallback(() => {
     stopLiveTranscriptPreview();
@@ -424,10 +470,10 @@ export default function SallyBarWindow() {
     try {
       setIsComposerOpen(false);
       setLiveTranscript('');
-      playStartChime();
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: VOICE_CAPTURE_CONSTRAINTS });
       streamRef.current = stream;
+      resetSignalLevels();
 
       const audioCtx = new AudioContext();
       const source = audioCtx.createMediaStreamSource(stream);
@@ -436,18 +482,33 @@ export default function SallyBarWindow() {
       source.connect(analyser);
       analyserRef.current = analyser;
 
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const dataArray = new Uint8Array(analyser.fftSize);
       const updateLevel = () => {
-        analyser.getByteFrequencyData(dataArray);
-        setAudioLevel(dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length / 255);
+        analyser.getByteTimeDomainData(dataArray);
+        let sumSquares = 0;
+        for (const value of dataArray) {
+          const centered = (value - 128) / 128;
+          sumSquares += centered * centered;
+        }
+        const rms = Math.sqrt(sumSquares / dataArray.length);
+        peakSignalLevelRef.current = Math.max(peakSignalLevelRef.current, rms);
+        signalLevelTotalRef.current += rms;
+        signalLevelSamplesRef.current += 1;
+        setAudioLevel(Math.min(rms * 12, 1));
         animFrameRef.current = requestAnimationFrame(updateLevel);
       };
       updateLevel();
 
       const preferredTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
       const supportedType = preferredTypes.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
-      const recorder = new MediaRecorder(stream, supportedType ? { mimeType: supportedType } : {});
+      const recorder = new MediaRecorder(
+        stream,
+        supportedType
+          ? { mimeType: supportedType, audioBitsPerSecond: AUDIO_BITS_PER_SECOND }
+          : { audioBitsPerSecond: AUDIO_BITS_PER_SECOND },
+      );
       audioChunksRef.current = [];
+      recordingStartedAtRef.current = Date.now();
 
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -459,16 +520,17 @@ export default function SallyBarWindow() {
       mediaRecorderRef.current = recorder;
       startLiveTranscriptPreview();
       setIsRecording(true);
+      playStartChime();
     } catch (error) {
       console.error('Failed to start recording:', error);
       cleanupRecordingUi();
+      resetSignalLevels();
       stopLiveTranscriptPreview();
       releaseRecordingStream();
     }
-  }, [cleanupRecordingUi, isRecording, playStartChime, releaseRecordingStream, startLiveTranscriptPreview, stopLiveTranscriptPreview]);
+  }, [cleanupRecordingUi, isRecording, playStartChime, releaseRecordingStream, resetSignalLevels, startLiveTranscriptPreview, stopLiveTranscriptPreview]);
 
   const stopRecording = useCallback(async () => {
-    playSendChime();
     cleanupRecordingUi();
     stopLiveTranscriptPreview();
     const recorder = mediaRecorderRef.current;
@@ -477,21 +539,47 @@ export default function SallyBarWindow() {
     streamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = false;
     });
+    playSendChime();
 
     return new Promise<void>((resolve) => {
       recorder.onstop = async () => {
         const actualMimeType = recorder.mimeType || 'audio/webm';
         const blob = new Blob(audioChunksRef.current, { type: actualMimeType });
         releaseRecordingStream();
+        const durationMs = Math.max(Date.now() - recordingStartedAtRef.current, 0);
+        const { peakLevel, averageLevel } = getSignalLevels();
+        if (isSilentRecording(durationMs)) {
+          await ipc.invoke('sally:handle-silence', {
+            durationMs,
+            peakLevel,
+            averageLevel,
+          });
+          recordingStartedAtRef.current = 0;
+          resetSignalLevels();
+          resolve();
+          return;
+        }
         const reader = new FileReader();
         reader.onloadend = async () => {
           const base64 = (reader.result as string).split(',')[1];
           if (base64) {
-            const transcript = await ipc.invoke('sally:transcribe', { audioBase64: base64, mimeType: actualMimeType });
+            const transcript = await ipc.invoke('sally:transcribe', {
+              audioBase64: base64,
+              mimeType: actualMimeType,
+              durationMs,
+            });
             if (transcript?.trim()) {
               setLiveTranscript(transcript.trim());
             }
+          } else {
+            await ipc.invoke('sally:handle-silence', {
+              durationMs,
+              peakLevel,
+              averageLevel,
+            });
           }
+          recordingStartedAtRef.current = 0;
+          resetSignalLevels();
           resolve();
         };
         reader.readAsDataURL(blob);
@@ -506,11 +594,13 @@ export default function SallyBarWindow() {
         recorder.stop();
       } catch {
         releaseRecordingStream();
+        recordingStartedAtRef.current = 0;
+        resetSignalLevels();
         resolve();
       }
       mediaRecorderRef.current = null;
     });
-  }, [cleanupRecordingUi, playSendChime, releaseRecordingStream, stopLiveTranscriptPreview]);
+  }, [cleanupRecordingUi, getSignalLevels, isSilentRecording, playSendChime, releaseRecordingStream, resetSignalLevels, stopLiveTranscriptPreview]);
 
   const cancelRecording = useCallback(() => {
     playCancelChime();
@@ -522,8 +612,10 @@ export default function SallyBarWindow() {
       recorder.stop();
     }
     mediaRecorderRef.current = null;
+    recordingStartedAtRef.current = 0;
+    resetSignalLevels();
     setLiveTranscript('');
-  }, [cleanupRecordingUi, playCancelChime, releaseRecordingStream, stopLiveTranscriptPreview]);
+  }, [cleanupRecordingUi, playCancelChime, releaseRecordingStream, resetSignalLevels, stopLiveTranscriptPreview]);
 
   const handleSendInstruction = useCallback(() => {
     const text = inputText.trim();

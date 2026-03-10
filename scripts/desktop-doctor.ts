@@ -1,6 +1,5 @@
 import { createRequire } from 'node:module';
 import process from 'node:process';
-import { findBrowserLaunchTarget } from '../electron/main/utils/browserDiscovery.js';
 
 const require = createRequire(import.meta.url);
 
@@ -11,10 +10,6 @@ function fail(message: string): never {
 
 function pass(message: string): void {
   console.log(`PASS ${message}`);
-}
-
-function warn(message: string): void {
-  console.warn(`WARN ${message}`);
 }
 
 const majorNodeVersion = Number.parseInt(process.versions.node.split('.')[0] || '0', 10);
@@ -31,19 +26,4 @@ try {
   fail(`uiohook-napi could not be loaded. Reinstall dependencies so native modules rebuild for Electron. (${message})`);
 }
 
-const browserTarget = findBrowserLaunchTarget();
-if (!browserTarget) {
-  fail('No supported Chrome, Chromium, or Edge installation/profile was detected for Playwright automation.');
-}
-
-if (browserTarget.executablePath) {
-  pass(`Browser automation target detected: ${browserTarget.label} at ${browserTarget.executablePath}`);
-} else if (browserTarget.channel) {
-  pass(`Browser automation target detected via Playwright channel: ${browserTarget.label} (${browserTarget.channel})`);
-}
-
-if (browserTarget.userDataDir) {
-  pass(`Existing browser profile detected at ${browserTarget.userDataDir}`);
-} else {
-  warn('No reusable browser profile detected. Sally will fall back to a temporary profile and may lose logged-in sessions.');
-}
+pass('Electron browser runtime is built into Sally, so no external Chrome or Playwright target is required.');
