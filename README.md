@@ -181,6 +181,38 @@ If you're using an AI coding IDE or agent, you can give it the prompt below afte
 > - confirming the backend setup path if needed
 > - keeping the repo clean
 
+## Automated Cloud Deployment
+
+For hackathon judging: this repository includes an automated cloud deployment path for the Sally Vision Backend, and the deployment code is checked into this public repo.
+
+Deployment automation files:
+- `sally-backend/cloudbuild.yaml` — Infrastructure/deployment pipeline for Google Cloud Build and Cloud Run
+- `sally-backend/deploy.sh` — One-command deployment script for Google Cloud Run
+- `sally-backend/Dockerfile` — Container definition used for deployment
+
+Automated deployment option:
+
+```bash
+cd sally-backend
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_GEMINI_API_KEY="<your-gemini-api-key>"
+```
+
+One-command scripted deployment option:
+
+```bash
+cd sally-backend
+GEMINI_API_KEY="<your-gemini-api-key>" ./deploy.sh
+```
+
+What this automates:
+- Build the backend container image
+- Push the image to Artifact Registry
+- Deploy the service to Google Cloud Run
+- Inject the required `GEMINI_API_KEY` environment variable at deploy time
+
+This deployment automation is included directly in the public repository for review.
+
 ### Cloud Run Backend Deployment (Optional)
 
 The Sally Vision Backend runs on Google Cloud Run and proxies Gemini API calls. (This is optional — Sally falls back to direct Gemini API calls if the backend is unavailable.)
@@ -352,7 +384,8 @@ Current repo layout after cleanup:
 ├── sally-backend/         # Cloud Run backend (Gemini vision proxy)
 │   ├── index.js           # Express server with @google/genai SDK
 │   ├── Dockerfile         # Cloud Run container config
-│   └── deploy.sh          # One-command Cloud Run deployment
+│   ├── cloudbuild.yaml    # Automated Cloud Build → Cloud Run deployment pipeline
+│   └── deploy.sh          # One-command Cloud Run deployment script
 ├── shared/                # Shared TypeScript types
 ├── docs/                  # Architecture and supporting documentation
 │   └── architecture.md   # Detailed system architecture document
