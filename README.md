@@ -11,7 +11,7 @@
 
 ---
 
-Sally is a **voice-first accessibility agent** for people with motor impairments, repetitive strain injuries, cognitive disabilities, or anyone who wants faster, hands-free web interaction. It lets people control any website using only their voice — no mouse, no keyboard, no complex navigation required.
+Sally is a **voice-first accessibility agent** for people with motor impairments, repetitive strain injuries, cognitive disabilities, or anyone who wants faster, hands-free web interaction. It lets people control any website using only their voice, no mouse, no keyboard, no complex navigation required.
 
 **The killer feature: "What do I see?"** Hold the push-to-talk key, ask the question, and Sally captures a screenshot, sends it to **Gemini 2.5 Flash** for multimodal vision analysis, and speaks back a natural-language description of what's on screen.
 
@@ -149,7 +149,7 @@ cp .env.example .env
 
 ### Cloud Run Backend Deployment (Optional)
 
-The Sally Vision Backend runs on Google Cloud Run and proxies Gemini API calls. This is optional — Sally falls back to direct Gemini API calls if the backend is unavailable.
+The Sally Vision Backend runs on Google Cloud Run and proxies Gemini API calls. (This is optional — Sally falls back to direct Gemini API calls if the backend is unavailable.)
 
 ```bash
 cd sally-backend
@@ -327,9 +327,9 @@ Current repo layout after cleanup:
 
 ## Accessibility Mission
 
-Sally exists because the web demands precise motor control — clicking, scrolling, typing, dragging — that millions of people struggle with. Whether it's a permanent motor impairment like ALS or cerebral palsy, a temporary injury like a broken wrist, or chronic RSI from years of mouse use, the barrier is the same: the web requires hands that work perfectly.
+Sally exists because the web demands precise motor control such as clicking, scrolling, typing, dragging, that millions of people struggle with. Whether it's a permanent motor impairment like ALS or cerebral palsy, a temporary injury like a broken wrist, or chronic RSI from years of mouse use, the barrier is the same: the web requires hands that work perfectly.
 
-Sally removes that barrier entirely. One voice command replaces dozens of clicks. The goal is not convenience — it's **independence**.
+Sally removes that barrier entirely. One voice command replaces dozens of clicks. The goal is not convenience, it's **independence**.
 
 ## Built By
 
