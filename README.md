@@ -149,7 +149,7 @@ cp .env.example .env
 
 ## AI IDE Quickstart
 
-If you're using an AI coding IDE or agent, you can give it the prompt below.
+If you're using an AI coding IDE or agent, you can give it the prompt below after cloning the repository locally.
 
 ### Suggested Prompt
 
@@ -179,7 +179,7 @@ If you're using an AI coding IDE or agent, you can give it the prompt below.
 > - verifying local setup
 > - checking for stale docs or broken scripts
 > - confirming the backend setup path if needed
-> - keeping the repo clean and hackathon-ready
+> - keeping the repo clean
 
 ### Cloud Run Backend Deployment (Optional)
 
