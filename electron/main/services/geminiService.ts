@@ -27,10 +27,29 @@ export interface GeminiScreenQuestionResult {
   researchQuery: string | null;
 }
 
+export interface GeminiBrowserRescueSuggestion {
+  label: string;
+  reason: string;
+  action: GeminiAction | null;
+  safeToAutoExecute: boolean;
+}
+
+export interface GeminiBrowserRescueBlocker {
+  label: string;
+  reason: string;
+}
+
+export interface GeminiBrowserRescueAnalysis {
+  pageSummary: string;
+  blockers: GeminiBrowserRescueBlocker[];
+  suggestions: GeminiBrowserRescueSuggestion[];
+}
+
 export type GeminiBrowserAssistiveIntent = 'actions' | 'buttons' | 'fields' | 'errors' | 'links' | 'headings';
 export type GeminiUserRequestIntent =
   | 'browser_task'
   | 'browser_assistive'
+  | 'browser_rescue'
   | 'describe_screen'
   | 'summarize_screen'
   | 'screen_question'
@@ -103,6 +122,20 @@ interface ScreenQuestionParams {
   sourceMode?: BrowserSourceMode;
 }
 
+interface BrowserRescueParams {
+  screenshot: string;
+  instruction?: string | null;
+  pageUrl?: string;
+  pageTitle?: string;
+  pageContext?: PageContext;
+  sourceMode?: BrowserSourceMode;
+  tabs?: BrowserTabInfo[];
+  activeTabId?: string | null;
+  overallGoal?: string | null;
+  failureContext?: string | null;
+  history?: string[];
+}
+
 interface InterpretUserRequestParams {
   transcript: string;
   source: 'voice' | 'typed';
@@ -160,6 +193,9 @@ Action rules:
 - Use visible text, labels, placeholders, roles, and ordinal position for selectors.
 - Include framePath or shadowPath only when they help disambiguate the target.
 - Prefer structured controls from pageContext when available.
+- For planned tasks, follow the current subtask instead of searching or executing the whole overall goal at once.
+- If the current subtask names a specific site or page, navigate or switch tabs for that destination directly instead of searching the entire user goal text.
+- After typing into a search field, do not repeat the same typing action. Press Enter, choose a result, or continue based on the updated page.
 - Use open_tab when the task benefits from researching or comparing something in another tab.
 - Use switch_tab when the target page is already open in another tab.
 - Keep narration short and natural because it will be spoken aloud.
@@ -186,6 +222,11 @@ Planner rules:
 - Keep the activeSubtask narrow enough for one short burst of browser actions.
 - Use rememberedFacts for names, email addresses, dates, comparison facts, selected links, or other useful task state.
 - Use the current tabs and page context to avoid redundant work.
+- If the goal spans multiple sites, tabs, or phases, preserve them as separate subtasks instead of collapsing everything into one generic search.
+- Reuse already-open tabs when possible before opening a new tab.
+- If the user wants facts from one page used in an email or form on another page, gather the facts first, store them in rememberedFacts, then draft or fill using those facts.
+- If the user asks for confirmation before sending or submitting, keep that as the final step and do not mark the task complete until Sally is paused for confirmation.
+- If the user says "the company website" but does not identify which company, use status=clarify with a short question.
 - If the goal is already complete, use status=complete.
 - If the task needs the user to resolve ambiguity, use status=clarify with one short clarificationQuestion.
 - If the task is blocked by site limitations or missing information, use status=blocked with blockedReason.
@@ -207,11 +248,51 @@ Rules:
 - If auto-research is disabled, always return shouldResearch=false.
 - If auto-research is enabled, only return shouldResearch=true when the user clearly wants more information beyond what is visible and you can form a safe, specific search query from visible names, labels, or text.`;
 
+const BROWSER_RESCUE_SYSTEM_PROMPT = `You are Sally's browser rescue analyzer.
+
+Your job is to help when the user says they are stuck on the current page.
+
+Return valid JSON only with this exact shape:
+{
+  "pageSummary": "one short sentence about what this page is mainly for",
+  "blockers": [
+    { "label": "short blocker label", "reason": "short explanation of what is blocking progress" }
+  ],
+  "suggestions": [
+    {
+      "label": "short next step",
+      "reason": "why this helps",
+      "action": {
+        "type": "click|fill|focus|select|press|hover|check|uncheck|null",
+        "targetId": "stable target id from pageContext when available",
+        "selector": "visible label, text, placeholder, or CSS selector",
+        "index": 1,
+        "framePath": [1],
+        "shadowPath": [1],
+        "value": "optional value for fill/select/press"
+      },
+      "safeToAutoExecute": false
+    }
+  ]
+}
+
+Rules:
+- Explain the main page purpose briefly.
+- Identify blockers like dialogs, missing fields, disabled controls, visible errors, or confusing states.
+- Suggest 2 to 3 short next steps grounded in the visible page state.
+- Prefer safe, reversible next steps.
+- Mark safeToAutoExecute=true only for clearly low-risk actions on obvious visible controls.
+- Never mark risky actions like send, submit, delete, purchase, publish, sign out, authentication, or permissions as safeToAutoExecute.
+- Do not try to summarize the whole screen. Focus only on the main point, the main blocker, and the best next step.
+- Keep labels, reasons, and actions short because Sally may speak them aloud.
+- Keep each field compact enough that Sally can read the final rescue response in at most three short lines.
+- Do not include markdown or prose outside the JSON object.`;
+
 const USER_REQUEST_INTERPRETER_PROMPT = `You are Sally's request interpreter. Your job is to infer what the human means in natural language, not to force them into exact command phrases.
 
 Return valid JSON only with this exact shape:
 {
-  "intent": "browser_task|browser_assistive|describe_screen|summarize_screen|screen_question|smart_home|chat|cancel|clarify|none",
+  "intent": "browser_task|browser_assistive|browser_rescue|describe_screen|summarize_screen|screen_question|smart_home|chat|cancel|clarify|none",
   "confidence": "high|medium|low",
   "normalizedInstruction": "string or null",
   "spokenResponse": "short spoken answer or null",
@@ -222,6 +303,7 @@ Return valid JSON only with this exact shape:
 Intent rules:
 - Use browser_task when the user wants Sally to open, navigate, click, type, search, or do something in the browser.
 - Use browser_assistive when the user is asking what they can do on the current page or wants visible buttons, links, fields, errors, or headings read out.
+- Use browser_rescue when the user says they are stuck, needs help getting through the current page, or wants Sally to choose the next helpful step on the current page.
 - Use describe_screen for requests to describe what is visible.
 - Use summarize_screen for concise summaries of what is visible.
 - Use screen_question for a specific question about what is visible or currently on the page or screen.
@@ -236,9 +318,13 @@ Behavior rules:
 - Screen-focused requests must still classify correctly even when no Sally browser is open.
 - Do not turn a screen request into chat just because the browser is closed.
 - Browser availability affects execution readiness, not intent classification.
+- Long actionable requests that chain several browser steps, destinations, tabs, remembered facts, or email drafting are browser_task, not describe_screen or clarify.
+- Requests that mention specific sites, tabs, remembered facts, and a final action like drafting an email should stay browser_task even if the current browser page is unrelated.
+- Treat phrases like "I'm stuck", "help me here", "what should I do here", and "how do I get through this" as browser_rescue when they refer to the current page or browser.
 - Treat phrases like "describe my screen", "what's going on here", "summarize what I'm seeing", "who is this person", and "what error am I looking at" as screen intents.
 - Treat phrases like "what can I do on this page" or "what buttons are here" as browser_assistive, even if Sally later needs to tell the user to open a page first.
 - Prefer normalizedInstruction that preserves the user's meaning in short plain language.
+- Preserve important entities such as site names, company names, and email addresses in normalizedInstruction.
 - If a browser task is obvious, do not ask a clarification question.
 - If the user seems to be following up on a recent turn, use that context instead of defaulting to clarify.
 - Referential follow-ups like "tell me more about that", "what about this", or "read more" should usually continue the most recent meaningful intent.
@@ -263,6 +349,17 @@ class GeminiService {
       (backendUrl) => this.answerScreenQuestionWithBackend(backendUrl, params),
       () => this.answerScreenQuestionDirect(params),
     );
+  }
+
+  async analyzeBrowserRescue(params: BrowserRescueParams): Promise<GeminiBrowserRescueAnalysis> {
+    return this.withBackendFallback(
+      (backendUrl) => this.analyzeBrowserRescueWithBackend(backendUrl, params),
+      () => this.analyzeBrowserRescueDirect(params),
+    );
+  }
+
+  async analyzeRescue(params: BrowserRescueParams): Promise<GeminiBrowserRescueAnalysis> {
+    return this.analyzeBrowserRescue(params);
   }
 
   async interpretUserRequest(params: InterpretUserRequestParams): Promise<GeminiUserRequestInterpretation> {
@@ -318,6 +415,14 @@ class GeminiService {
   ): Promise<GeminiScreenQuestionResult> {
     const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/answer-screen-question', params);
     return this.normalizeScreenQuestionResult(raw);
+  }
+
+  private async analyzeBrowserRescueWithBackend(
+    backendUrl: string,
+    params: BrowserRescueParams,
+  ): Promise<GeminiBrowserRescueAnalysis> {
+    const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/analyze-browser-rescue', params);
+    return this.normalizeBrowserRescueAnalysis(raw);
   }
 
   private async interpretUserRequestWithBackend(
@@ -574,6 +679,9 @@ If no action is needed, set action to null.
 Prefer targetId when pageContext provides a clear visible control.
 Use "index" only when there are multiple similar visible matches and ordinal targeting helps.
 Use framePath or shadowPath only when they are needed to disambiguate the target.
+Use the current subtask, not the full overall goal, to choose the next action.
+Do not search for or type the entire overall goal sentence into a search box.
+When opening another tab, use a direct URL or a short site-specific destination, not the full task text.
 Use open_tab when you need another page or source to complete the goal.
 Use switch_tab when the needed page is already open.`;
 
@@ -624,6 +732,53 @@ Respond with valid JSON only:
     return this.normalizeScreenQuestionResult(raw);
   }
 
+  private async analyzeBrowserRescueDirect(params: BrowserRescueParams): Promise<GeminiBrowserRescueAnalysis> {
+    const groundingBlock = this.getGroundingBlock(params.pageUrl, params.pageTitle);
+    const pageContextBlock = this.getPageContextBlock(params.pageContext);
+    const sourceModeBlock = this.getSourceModeBlock(params.sourceMode);
+    const tabsBlock = this.getTabsBlock(params.tabs, params.activeTabId);
+    const instructionBlock = typeof params.instruction === 'string' && params.instruction.trim()
+      ? `\n\nUser request:\n${params.instruction.trim()}`
+      : '';
+    const historyBlock = params.history && params.history.length > 0
+      ? `\n\nRecent failed or repeated steps:\n${params.history.slice(-8).map((step, index) => `${index + 1}. ${step}`).join('\n')}`
+      : '';
+    const failureBlock = params.failureContext
+      ? `\n\nLatest failure:\n${params.failureContext}`
+      : '';
+    const goalBlock = params.overallGoal
+      ? `\n\nOverall goal:\n${params.overallGoal}`
+      : '';
+
+    const prompt = `Current browser page rescue request.${instructionBlock}${groundingBlock}${sourceModeBlock}${tabsBlock}${pageContextBlock}${goalBlock}${failureBlock}${historyBlock}
+
+Respond with valid JSON only.
+
+Guidance:
+- Summarize what this page is mainly for.
+- Name the blockers that are most likely stopping the user.
+- Suggest 2 to 3 short next steps.
+- Use blocker objects with label and reason fields.
+- Include an action object only when Sally could actually perform that next step.
+- Prefer safe, reversible actions like focusing a field, closing a dialog, opening a menu, or clicking a non-destructive control.
+- Never mark send, submit, delete, purchase, publish, sign-out, authentication, or permissions actions as safeToAutoExecute.`;
+
+    const raw = await this.generateJson({
+      systemInstruction: BROWSER_RESCUE_SYSTEM_PROMPT,
+      prompt,
+      screenshot: params.screenshot,
+      maxOutputTokens: 512,
+      temperature: 0.1,
+      fallback: {
+        pageSummary: 'I can inspect this page and help with the next step.',
+        blockers: [],
+        suggestions: [],
+      },
+    });
+
+    return this.normalizeBrowserRescueAnalysis(raw);
+  }
+
   private async interpretUserRequestDirect(params: InterpretUserRequestParams): Promise<GeminiUserRequestInterpretation> {
     const browserBlock = params.browserIsOpen
       ? `\n\nCurrent browser context:\n- Browser open: yes\n- URL: ${params.pageUrl || '(unknown)'}\n- Title: ${params.pageTitle || '(untitled)'}`
@@ -637,6 +792,9 @@ Respond with valid JSON only.
 
 Guidance:
 - If the user is asking Sally to go somewhere, search, click, type, compose, submit a form, or do a multi-step website action, use browser_task.
+- If the user wants Sally to diagnose why they are stuck on a page, identify blockers, or suggest the next safe steps, use browser_rescue.
+- Long multi-clause requests with several destinations, tabs, remembered facts, or email drafting are always browser_task unless a required entity is missing.
+- If the user says they are stuck on the current page or wants Sally to pick the next helpful step, use browser_rescue.
 - If they are asking what is on screen or what page elements exist, use describe_screen, summarize_screen, screen_question, or browser_assistive as appropriate.
 - Requests about the desktop or current screen still count as screen intents when no browser is open.
 - Do not respond with a browser-unavailable chat answer for an obvious describe_screen, summarize_screen, or screen_question request.
@@ -678,6 +836,11 @@ Guidance:
 - Use the current page and open tabs to avoid repeating work.
 - Keep the activeSubtask narrow enough for Sally's next-action browser loop.
 - Use rememberedFacts for reusable details the user may refer to later, like names, email addresses, dates, prices, or chosen links.
+- If the goal spans multiple sites, tabs, or phases, create distinct subtasks for them.
+- Reuse already-open Gmail, LinkedIn, and other relevant tabs when available.
+- For research-then-draft tasks, gather and remember facts before moving to the drafting step.
+- If the goal includes sending or submitting only after user approval, stop in a confirmation-ready state instead of marking the task complete.
+- If "the company website" is requested without a specific company, ask a short clarification question.
 - If the goal is already done, return status="complete".
 - If the task genuinely needs user input, return status="clarify" with one short clarificationQuestion.
 - If the task is blocked by the site or missing data, return status="blocked" with blockedReason.`;
@@ -844,6 +1007,81 @@ Guidance:
     };
   }
 
+  private normalizeBrowserRescueAnalysis(raw: Record<string, unknown>): GeminiBrowserRescueAnalysis {
+    const pageSummary = typeof raw.pageSummary === 'string' && raw.pageSummary.trim()
+      ? raw.pageSummary.trim()
+      : 'I can inspect this page and help with the next step.';
+
+    const blockers: GeminiBrowserRescueBlocker[] = Array.isArray(raw.blockers)
+      ? raw.blockers
+        .map((item, index) => {
+          if (typeof item === 'string' && item.trim()) {
+            return {
+              label: item.trim(),
+              reason: item.trim(),
+            };
+          }
+
+          if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            return null;
+          }
+
+          const candidate = item as Record<string, unknown>;
+          return {
+            label: typeof candidate.label === 'string' && candidate.label.trim()
+              ? candidate.label.trim()
+              : `Blocker ${index + 1}`,
+            reason: typeof candidate.reason === 'string' && candidate.reason.trim()
+              ? candidate.reason.trim()
+              : 'This appears to be blocking progress on the page.',
+          };
+        })
+        .filter((item): item is GeminiBrowserRescueBlocker => Boolean(item))
+        .slice(0, 4)
+      : [];
+
+    const suggestions: GeminiBrowserRescueSuggestion[] = Array.isArray(raw.suggestions)
+      ? raw.suggestions
+        .map((item, index) => {
+          if (typeof item === 'string' && item.trim()) {
+            return {
+              label: `Suggestion ${index + 1}`,
+              reason: item.trim(),
+              action: null,
+              safeToAutoExecute: false,
+            };
+          }
+
+          if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            return null;
+          }
+
+          const candidate = item as Record<string, unknown>;
+          let action: GeminiAction | null = null;
+
+          if (candidate.action && typeof candidate.action === 'object' && !Array.isArray(candidate.action)) {
+            const normalizedAction = this.normalizeInterpretResult({ narration: '', action: candidate.action }).action;
+            action = normalizedAction?.type === 'null' ? null : normalizedAction;
+          }
+
+          return {
+            label: typeof candidate.label === 'string' && candidate.label.trim()
+              ? candidate.label.trim()
+              : `Suggestion ${index + 1}`,
+            reason: typeof candidate.reason === 'string' && candidate.reason.trim()
+              ? candidate.reason.trim()
+              : 'This looks like the best next step.',
+            action,
+            safeToAutoExecute: Boolean(candidate.safeToAutoExecute),
+          };
+        })
+        .filter((item): item is GeminiBrowserRescueSuggestion => Boolean(item))
+        .slice(0, 4)
+      : [];
+
+    return { pageSummary, blockers, suggestions };
+  }
+
   private normalizeUserRequestInterpretation(
     raw: Record<string, unknown>,
     transcript: string,
@@ -938,6 +1176,7 @@ Guidance:
     switch (value) {
       case 'browser_task':
       case 'browser_assistive':
+      case 'browser_rescue':
       case 'describe_screen':
       case 'summarize_screen':
       case 'screen_question':

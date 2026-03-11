@@ -16,6 +16,10 @@ export interface PageContextElement {
   selected?: boolean;
   expanded?: boolean;
   pressed?: boolean;
+  left?: number;
+  top?: number;
+  width?: number;
+  height?: number;
   centerX?: number;
   centerY?: number;
 }

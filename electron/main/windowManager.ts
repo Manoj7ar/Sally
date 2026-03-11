@@ -8,6 +8,19 @@ import type { SallyBarLayout } from '../../shared/types.js';
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
+type OverlayMode = 'border' | 'target';
+
+interface OverlayHighlightPayload {
+  mode: OverlayMode;
+  label?: string | null;
+  rect?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null;
+}
+
 let _isQuitting = false;
 export function setQuitting(val: boolean): void { _isQuitting = val; }
 export function isQuitting(): boolean { return _isQuitting; }
@@ -17,6 +30,7 @@ class WindowManager {
   private sallyBarWindow: BrowserWindow | null = null;
   private borderOverlayWindow: BrowserWindow | null = null;
   private borderOverlayTargetDisplayId: number | null = null;
+  private overlayHighlightState: OverlayHighlightPayload | null = null;
 
   private attachWindowDiagnostics(win: BrowserWindow, name: string): void {
     win.webContents.on('console-message', (_event, level, message) => {
@@ -219,33 +233,21 @@ class WindowManager {
     this.borderOverlayWindow.setBounds(this.getBorderOverlayBounds());
   }
 
-  setBorderOverlayTargetToCursor(): void {
-    const cursorPoint = screen.getCursorScreenPoint();
-    this.borderOverlayTargetDisplayId = screen.getDisplayNearestPoint(cursorPoint).id;
-    this.syncBorderOverlayBounds();
-  }
-
-  setBorderOverlayTargetByBounds(bounds: { x: number; y: number; width: number; height: number } | null): void {
-    if (!bounds) {
-      this.borderOverlayTargetDisplayId = null;
-      this.syncBorderOverlayBounds();
+  private pushOverlayHighlightState(): void {
+    if (!this.borderOverlayWindow || this.borderOverlayWindow.isDestroyed()) {
       return;
     }
 
-    this.borderOverlayTargetDisplayId = screen.getDisplayMatching(bounds).id;
-    this.syncBorderOverlayBounds();
+    if (this.overlayHighlightState) {
+      this.borderOverlayWindow.webContents.send('sally:overlay-highlight', this.overlayHighlightState);
+    } else {
+      this.borderOverlayWindow.webContents.send('sally:overlay-clear', undefined);
+    }
   }
 
-  getBorderOverlayDisplayId(): number {
-    return this.resolveBorderOverlayDisplay().id;
-  }
-
-  showBorderOverlay(): void {
-    const bounds = this.getBorderOverlayBounds();
-
+  private ensureBorderOverlayWindow(bounds: { x: number; y: number; width: number; height: number }): void {
     if (this.borderOverlayWindow && !this.borderOverlayWindow.isDestroyed()) {
       this.borderOverlayWindow.setBounds(bounds);
-      this.borderOverlayWindow.show();
       return;
     }
 
@@ -279,17 +281,88 @@ class WindowManager {
     this.borderOverlayWindow.loadURL(this.getRendererUrl('borderOverlay'));
     this.attachWindowDiagnostics(this.borderOverlayWindow, 'borderOverlay');
 
+    this.borderOverlayWindow.webContents.on('did-finish-load', () => {
+      this.pushOverlayHighlightState();
+    });
+
     this.borderOverlayWindow.once('ready-to-show', () => {
       if (this.borderOverlayWindow && !this.borderOverlayWindow.isDestroyed()) {
         this.borderOverlayWindow.showInactive();
+        this.pushOverlayHighlightState();
       }
     });
   }
 
+  setBorderOverlayTargetToCursor(): void {
+    const cursorPoint = screen.getCursorScreenPoint();
+    this.borderOverlayTargetDisplayId = screen.getDisplayNearestPoint(cursorPoint).id;
+    this.syncBorderOverlayBounds();
+  }
+
+  setBorderOverlayTargetByBounds(bounds: { x: number; y: number; width: number; height: number } | null): void {
+    if (!bounds) {
+      this.borderOverlayTargetDisplayId = null;
+      this.syncBorderOverlayBounds();
+      return;
+    }
+
+    this.borderOverlayTargetDisplayId = screen.getDisplayMatching(bounds).id;
+    this.syncBorderOverlayBounds();
+  }
+
+  getBorderOverlayDisplayId(): number {
+    return this.resolveBorderOverlayDisplay().id;
+  }
+
+  showBorderOverlay(): void {
+    const bounds = this.getBorderOverlayBounds();
+    this.ensureBorderOverlayWindow(bounds);
+    if (!this.overlayHighlightState) {
+      this.overlayHighlightState = { mode: 'border' };
+    }
+    this.borderOverlayWindow?.showInactive();
+    this.pushOverlayHighlightState();
+  }
+
   hideBorderOverlay(): void {
     if (this.borderOverlayWindow && !this.borderOverlayWindow.isDestroyed()) {
+      this.overlayHighlightState = null;
+      this.pushOverlayHighlightState();
       this.borderOverlayWindow.hide();
     }
+  }
+
+  showTargetHighlight(bounds: { x: number; y: number; width: number; height: number }, label?: string | null): void {
+    this.setBorderOverlayTargetByBounds(bounds);
+    const display = this.resolveBorderOverlayDisplay();
+    const overlayRect = {
+      x: Math.max(0, Math.round(bounds.x - display.bounds.x)),
+      y: Math.max(0, Math.round(bounds.y - display.bounds.y)),
+      width: Math.round(bounds.width),
+      height: Math.round(bounds.height),
+    };
+
+    this.overlayHighlightState = {
+      mode: 'target',
+      label: label || null,
+      rect: overlayRect,
+    };
+
+    this.showBorderOverlay();
+  }
+
+  clearTargetHighlight(): void {
+    if (!this.borderOverlayWindow || this.borderOverlayWindow.isDestroyed()) {
+      this.overlayHighlightState = null;
+      return;
+    }
+
+    this.overlayHighlightState = { mode: 'border' };
+    this.pushOverlayHighlightState();
+  }
+
+  hasActiveTargetHighlight(): boolean {
+    return this.overlayHighlightState?.mode === 'target';
   }
 
   getSallyBarWindow(): BrowserWindow | null {
@@ -316,6 +389,7 @@ class WindowManager {
     this.configWindow = null;
     this.sallyBarWindow = null;
     this.borderOverlayWindow = null;
+    this.overlayHighlightState = null;
   }
 }
 

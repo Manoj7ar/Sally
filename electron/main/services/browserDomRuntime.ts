@@ -47,7 +47,8 @@ export function runDomTaskInPage(payload: {
   const isVisible = (element: Element): element is HTMLElement => {
     if (!(element instanceof HTMLElement)) return false;
 
-    const style = window.getComputedStyle(element);
+    const view = element.ownerDocument.defaultView || window;
+    const style = view.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     if (style.display === 'none' || style.visibility === 'hidden') return false;
     if (Number(style.opacity || '1') <= 0.05) return false;
@@ -55,8 +56,8 @@ export function runDomTaskInPage(payload: {
 
     return rect.bottom >= 0
       && rect.right >= 0
-      && rect.top <= window.innerHeight
-      && rect.left <= window.innerWidth;
+      && rect.top <= view.innerHeight
+      && rect.left <= view.innerWidth;
   };
 
   const inferRole = (element: HTMLElement): string => {
@@ -220,6 +221,10 @@ export function runDomTaskInPage(payload: {
     selected?: boolean;
     expanded?: boolean;
     pressed?: boolean;
+    left: number;
+    top: number;
+    width: number;
+    height: number;
     centerX: number;
     centerY: number;
     element: HTMLElement;
@@ -234,7 +239,10 @@ export function runDomTaskInPage(payload: {
     let skippedCrossOriginFrames = 0;
     let order = 0;
 
-    const visitRoot = (root: Document | ShadowRoot, context: { framePath: number[]; shadowPath: number[] }) => {
+    const visitRoot = (
+      root: Document | ShadowRoot,
+      context: { framePath: number[]; shadowPath: number[]; offsetX: number; offsetY: number },
+    ) => {
       let frameOrdinal = 0;
       let shadowOrdinal = 0;
 
@@ -244,7 +252,13 @@ export function runDomTaskInPage(payload: {
         const role = inferRole(element);
 
         if (visible && isInteractiveCandidate(element, role, descriptor)) {
-          const rect = element.getBoundingClientRect();
+          const localRect = element.getBoundingClientRect();
+          const rect = {
+            left: localRect.left + context.offsetX,
+            top: localRect.top + context.offsetY,
+            width: localRect.width,
+            height: localRect.height,
+          };
           const expanded = element.getAttribute('aria-expanded');
           const pressed = element.getAttribute('aria-pressed');
           const checked = element instanceof HTMLInputElement
@@ -270,6 +284,10 @@ export function runDomTaskInPage(payload: {
             selected,
             expanded: expanded === null ? undefined : normalizeLower(expanded) === 'true',
             pressed: pressed === null ? undefined : normalizeLower(pressed) === 'true',
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
             centerX: Math.round(rect.left + rect.width / 2),
             centerY: Math.round(rect.top + rect.height / 2),
             element,
@@ -299,6 +317,8 @@ export function runDomTaskInPage(payload: {
           visitRoot(element.shadowRoot, {
             framePath: [...context.framePath],
             shadowPath: [...context.shadowPath, shadowOrdinal],
+            offsetX: context.offsetX,
+            offsetY: context.offsetY,
           });
         }
 
@@ -306,9 +326,12 @@ export function runDomTaskInPage(payload: {
           const frameDocument = getAccessibleFrameDocument(element);
           if (frameDocument) {
             frameOrdinal += 1;
+            const frameRect = element.getBoundingClientRect();
             visitRoot(frameDocument, {
               framePath: [...context.framePath, frameOrdinal],
               shadowPath: [...context.shadowPath],
+              offsetX: context.offsetX + frameRect.left,
+              offsetY: context.offsetY + frameRect.top,
             });
           } else if (visible) {
             skippedCrossOriginFrames += 1;
@@ -321,7 +344,7 @@ export function runDomTaskInPage(payload: {
       getChildren(root).forEach((child) => visitElement(child));
     };
 
-    visitRoot(document, { framePath: [], shadowPath: [] });
+    visitRoot(document, { framePath: [], shadowPath: [], offsetX: 0, offsetY: 0 });
 
     const activeElement = getDeepActiveElement(document);
     const activeMatch = activeElement
@@ -495,6 +518,10 @@ export function runDomTaskInPage(payload: {
           selected: entry.selected,
           expanded: entry.expanded,
           pressed: entry.pressed,
+          left: entry.left,
+          top: entry.top,
+          width: entry.width,
+          height: entry.height,
           centerX: entry.centerX,
           centerY: entry.centerY,
         })),

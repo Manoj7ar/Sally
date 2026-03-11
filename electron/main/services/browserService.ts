@@ -4,6 +4,7 @@ import { BrowserWindow, screen } from 'electron';
 import type { GeminiAction } from './geminiService.js';
 import type { BrowserSnapshot, BrowserSourceMode, BrowserTabInfo, PageContext } from './pageContext.js';
 import { runDomTaskInPage } from './browserDomRuntime.js';
+import { destinationResolver } from './destinationResolver.js';
 
 const BROWSER_PARTITION = 'persist:sally-browser';
 const MAX_INTERACTIVE_ELEMENTS = 40;
@@ -16,6 +17,16 @@ interface BrowserTabState {
   id: string;
   window: BrowserWindow;
   createdAt: number;
+}
+
+export interface GmailDraftInspection {
+  url: string;
+  title: string;
+  composeOpen: boolean;
+  toValue: string | null;
+  subject: string | null;
+  bodyText: string;
+  sendVisible: boolean;
 }
 
 class BrowserService {
@@ -91,6 +102,15 @@ class BrowserService {
     return tab.window.getBounds();
   }
 
+  async getBrowserContentBounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+    const tab = this.getActiveTab();
+    if (!tab || tab.window.isDestroyed()) {
+      return null;
+    }
+
+    return tab.window.getContentBounds();
+  }
+
   async takeScreenshot(): Promise<string> {
     const window = await this.launch();
     const image = await window.webContents.capturePage();
@@ -115,6 +135,49 @@ class BrowserService {
     };
   }
 
+  async inspectGmailDraft(): Promise<GmailDraftInspection | null> {
+    const tab = this.getActiveTab();
+    if (!tab || tab.window.isDestroyed()) {
+      return null;
+    }
+
+    const currentUrl = tab.window.webContents.getURL();
+    if (!currentUrl.includes('mail.google.com')) {
+      return null;
+    }
+
+    return tab.window.webContents.executeJavaScript(`(() => {
+      const url = new URL(location.href);
+      const composeDialog = document.querySelector('div[role="dialog"]');
+      const bodyRoot = document.querySelector('div[aria-label="Message Body"]')
+        || document.querySelector('div[role="textbox"][aria-label*="Message Body"]');
+      const subjectInput = document.querySelector('input[name="subjectbox"]');
+      const toInput = document.querySelector('input[aria-label*="Recipients"]')
+        || document.querySelector('input[aria-label*="To"]');
+      const recipientChip = document.querySelector('[email]') || document.querySelector('span[email]');
+      const sendButton = Array.from(document.querySelectorAll('div[role="button"], button'))
+        .find((element) => {
+          const label = (element.getAttribute('aria-label') || element.textContent || '').trim();
+          return /^send$/i.test(label) || /^send\\b/i.test(label);
+        });
+
+      return {
+        url: location.href,
+        title: document.title,
+        composeOpen: Boolean(composeDialog || subjectInput || bodyRoot || url.searchParams.get('tf') === 'cm'),
+        toValue: (toInput && 'value' in toInput ? toInput.value || null : null)
+          || recipientChip?.getAttribute('email')
+          || url.searchParams.get('to')
+          || null,
+        subject: subjectInput && 'value' in subjectInput ? subjectInput.value || null : null,
+        bodyText: bodyRoot
+          ? (bodyRoot.innerText || bodyRoot.textContent || '')
+          : (url.searchParams.get('body') || ''),
+        sendVisible: Boolean(sendButton),
+      };
+    })()`, true) as Promise<GmailDraftInspection>;
+  }
+
   async executeAction(action: GeminiAction): Promise<string> {
     const window = await this.launch();
     const contents = window.webContents;
@@ -123,16 +186,19 @@ class BrowserService {
       switch (action.type) {
         case 'navigate': {
           if (!action.url) return 'No URL provided';
-          const url = this.coerceUrl(action.url);
+          const url = await this.resolveNavigationTarget(action.url);
           const beforeUrl = contents.getURL();
           await this.ensurePageUrl(window, url);
-          await this.waitForSettle('navigate');
-          return contents.getURL() !== beforeUrl ? `Navigated to ${url}` : `Action failed: did not navigate to ${url}`;
+          const afterUrl = await this.waitForNavigationResult(window, beforeUrl, url);
+          return afterUrl && (afterUrl !== beforeUrl || this.isEquivalentNavigationUrl(afterUrl, url))
+            ? `Navigated to ${afterUrl}`
+            : `Action failed: did not navigate to ${url}`;
         }
 
         case 'open_tab': {
           const rawUrl = action.url || action.selector || action.value || '';
-          const tab = await this.openTab(rawUrl || undefined, { activate: true });
+          const targetUrl = rawUrl ? await this.resolveNavigationTarget(rawUrl) : undefined;
+          const tab = await this.openTab(targetUrl, { activate: true });
           await this.waitForSettle('open_tab');
           return `Opened new tab "${tab.title || tab.url}"`;
         }
@@ -444,6 +510,75 @@ class BrowserService {
 
   private hasRealContent(url: string): boolean {
     return Boolean(url && url !== 'about:blank' && !url.startsWith('chrome://newtab'));
+  }
+
+  private async resolveNavigationTarget(target: string): Promise<string> {
+    const trimmed = target.trim();
+    if (!trimmed) {
+      return 'https://www.google.com';
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || /\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s]*)?\b/i.test(trimmed)) {
+      return this.coerceUrl(trimmed);
+    }
+
+    const resolved = await destinationResolver.resolveNavigationTarget(trimmed);
+    return resolved.url;
+  }
+
+  private isEquivalentNavigationUrl(currentUrl: string, targetUrl: string): boolean {
+    try {
+      const current = new URL(currentUrl);
+      const target = new URL(targetUrl);
+
+      if (current.origin === target.origin) {
+        const normalizedTargetPath = target.pathname.replace(/\/+$/g, '') || '/';
+        const normalizedCurrentPath = current.pathname.replace(/\/+$/g, '') || '/';
+        if (normalizedTargetPath === '/') {
+          return true;
+        }
+
+        return normalizedCurrentPath === normalizedTargetPath || normalizedCurrentPath.startsWith(`${normalizedTargetPath}/`);
+      }
+
+      if (target.hostname === 'mail.google.com') {
+        if (current.hostname === 'workspace.google.com' && /\/gmail\/?$/i.test(current.pathname.replace(/\/+$/g, ''))) {
+          return true;
+        }
+
+        if (current.hostname === 'accounts.google.com') {
+          const continueTarget = current.searchParams.get('continue') || '';
+          const service = current.searchParams.get('service') || '';
+          return continueTarget.includes('mail.google.com') || /mail/i.test(service);
+        }
+      }
+
+      return false;
+    } catch {
+      return currentUrl === targetUrl || currentUrl.startsWith(targetUrl);
+    }
+  }
+
+  private async waitForNavigationResult(window: BrowserWindow, beforeUrl: string, targetUrl: string): Promise<string> {
+    await this.waitForSettle('navigate');
+
+    const deadline = Date.now() + 8_000;
+    let currentUrl = window.webContents.getURL();
+
+    while (Date.now() < deadline) {
+      if (currentUrl && currentUrl !== beforeUrl) {
+        return currentUrl;
+      }
+
+      if (this.isEquivalentNavigationUrl(currentUrl, targetUrl)) {
+        return currentUrl;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      currentUrl = window.webContents.getURL();
+    }
+
+    return currentUrl;
   }
 
   private coerceUrl(url: string): string {

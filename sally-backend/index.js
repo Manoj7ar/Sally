@@ -1,6 +1,7 @@
 // Sally Vision Backend - Gemini multimodal proxy for Cloud Run
 // POST /api/interpret-screen        -> { narration, action }
 // POST /api/answer-screen-question  -> { answer, shouldResearch, researchQuery }
+// POST /api/analyze-browser-rescue  -> { pageSummary, blockers, suggestions }
 // POST /api/interpret-user-request  -> { intent, confidence, normalizedInstruction, ... }
 // POST /api/plan-complex-task       -> { status, planSummary, activeSubtask, ... }
 
@@ -192,10 +193,73 @@ function normalizeScreenQuestionResult(raw) {
   };
 }
 
+function normalizeBrowserRescueAnalysis(raw) {
+  const pageSummary = typeof raw?.pageSummary === 'string' && raw.pageSummary.trim()
+    ? raw.pageSummary.trim()
+    : 'I can inspect this page and help with the next step.';
+
+  const blockers = Array.isArray(raw?.blockers)
+    ? raw.blockers
+      .map((item, index) => {
+        if (typeof item === 'string' && item.trim()) {
+          return { label: item.trim(), reason: item.trim() };
+        }
+
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          return null;
+        }
+
+        return {
+          label: typeof item.label === 'string' && item.label.trim() ? item.label.trim() : `Blocker ${index + 1}`,
+          reason: typeof item.reason === 'string' && item.reason.trim() ? item.reason.trim() : 'This appears to be blocking progress on the page.',
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 4)
+    : [];
+
+  const suggestions = Array.isArray(raw?.suggestions)
+    ? raw.suggestions
+      .map((item, index) => {
+        if (typeof item === 'string' && item.trim()) {
+          return {
+            label: `Suggestion ${index + 1}`,
+            reason: item.trim(),
+            action: null,
+            safeToAutoExecute: false,
+          };
+        }
+
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          return null;
+        }
+
+        let action = null;
+
+        if (item.action && typeof item.action === 'object' && !Array.isArray(item.action)) {
+          const normalizedAction = normalizeInterpretResult({ narration: '', action: item.action }).action;
+          action = normalizedAction?.type === 'null' ? null : normalizedAction;
+        }
+
+        return {
+          label: typeof item.label === 'string' && item.label.trim() ? item.label.trim() : `Suggestion ${index + 1}`,
+          reason: typeof item.reason === 'string' && item.reason.trim() ? item.reason.trim() : 'This looks like the best next step.',
+          action,
+          safeToAutoExecute: Boolean(item.safeToAutoExecute),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 4)
+    : [];
+
+  return { pageSummary, blockers, suggestions };
+}
+
 function normalizeUserRequestInterpretation(raw, transcript) {
   const intent = [
     'browser_task',
     'browser_assistive',
+    'browser_rescue',
     'describe_screen',
     'summarize_screen',
     'screen_question',
@@ -442,6 +506,10 @@ If no action is needed, set action to null.
 Prefer targetId when pageContext provides a clear visible control.
 Use "index" only when there are multiple similar visible matches and ordinal targeting helps.
 Use framePath or shadowPath only when they are needed to disambiguate the target.
+Use the current subtask, not the full overall goal, to choose the next action.
+Do not search for or type the entire overall goal sentence into a search box.
+When opening another tab, use a direct URL or a short site-specific destination, not the full task text.
+After typing into a search field, do not repeat the same typing action. Press Enter, choose a result, or continue based on the updated page.
 Use open_tab when you need another page or source to complete the goal.
 Use switch_tab when the needed page is already open.`;
 
@@ -521,6 +589,114 @@ Respond with valid JSON only:
   }
 });
 
+async function handleBrowserRescueAnalysis(req, res) {
+  const {
+    screenshot,
+    instruction,
+    pageUrl,
+    pageTitle,
+    pageContext,
+    sourceMode,
+    tabs,
+    activeTabId,
+    overallGoal,
+    failureContext,
+    history,
+  } = req.body ?? {};
+
+  if (!screenshot || typeof screenshot !== 'string') {
+    return res.status(400).json({ error: 'screenshot base64 is required' });
+  }
+
+  const instructionBlock = typeof instruction === 'string' && instruction.trim()
+    ? `\n\nUser request:\n${instruction.trim()}`
+    : '';
+  const historyBlock = Array.isArray(history) && history.length > 0
+    ? `\n\nRecent failed or repeated steps:\n${history.slice(-8).map((step, index) => `${index + 1}. ${String(step)}`).join('\n')}`
+    : '';
+  const failureBlock = typeof failureContext === 'string' && failureContext.trim()
+    ? `\n\nLatest failure:\n${failureContext.trim()}`
+    : '';
+  const goalBlock = typeof overallGoal === 'string' && overallGoal.trim()
+    ? `\n\nOverall goal:\n${overallGoal.trim()}`
+    : '';
+
+  const systemPrompt = `You are Sally's browser rescue analyzer.
+
+Return valid JSON only with this exact shape:
+{
+  "pageSummary": "one short sentence about what this page is mainly for",
+  "blockers": [
+    { "label": "short blocker label", "reason": "short explanation of what is blocking progress" }
+  ],
+  "suggestions": [
+    {
+      "label": "short next step",
+      "reason": "why this helps",
+      "action": {
+        "type": "click|fill|focus|select|press|hover|check|uncheck|null",
+        "targetId": "stable target id from pageContext when available",
+        "selector": "visible label, text, placeholder, or CSS selector",
+        "index": 1,
+        "framePath": [1],
+        "shadowPath": [1],
+        "value": "optional value for fill/select/press"
+      },
+      "safeToAutoExecute": false
+    }
+  ]
+}
+
+Rules:
+- Explain the main page purpose briefly.
+- Identify blockers like dialogs, missing fields, disabled controls, visible errors, or confusing states.
+- Suggest 2 to 3 short next steps grounded in the visible page state.
+- Prefer safe, reversible actions.
+- Mark safeToAutoExecute=true only for clearly low-risk actions on obvious visible controls.
+- Never mark send, submit, delete, purchase, publish, sign-out, authentication, or permissions actions as safeToAutoExecute.
+- Do not try to summarize the whole screen. Focus only on the main point, the main blocker, and the best next step.
+- Keep labels, reasons, and actions short.
+- Keep each field compact enough that Sally can read the final rescue response in at most three short lines.
+- Do not include markdown or prose outside the JSON object.`;
+
+  const prompt = `Current browser page rescue request.${instructionBlock}${getGroundingBlock(pageUrl, pageTitle)}${getSourceModeBlock(sourceMode)}${getTabsBlock(tabs, activeTabId)}${getPageContextBlock(pageContext)}${goalBlock}${failureBlock}${historyBlock}
+
+Respond with valid JSON only.
+
+Guidance:
+- Summarize what this page is mainly for.
+- Name the blockers that are most likely stopping the user.
+- Suggest 2 to 3 short next steps.
+- Use blocker objects with label and reason fields.
+- Include an action object only when Sally could actually perform that next step.
+- Prefer safe, reversible actions like focusing a field, closing a dialog, opening a menu, or clicking a non-destructive control.
+- Never mark send, submit, delete, purchase, publish, sign-out, authentication, or permissions actions as safeToAutoExecute.`;
+
+  try {
+    const raw = await generateJson({
+      screenshot,
+      prompt,
+      systemInstruction: systemPrompt,
+      fallback: {
+        pageSummary: 'I can inspect this page and help with the next step.',
+        blockers: [],
+        suggestions: [],
+      },
+      maxOutputTokens: 512,
+      temperature: 0.1,
+    });
+
+    return res.json(normalizeBrowserRescueAnalysis(raw));
+  } catch (error) {
+    console.error('[Sally Backend] Gemini browser-rescue error:', error);
+    const message = error instanceof Error ? error.message : String(error);
+    return res.status(500).json({ error: `Gemini API error: ${message}` });
+  }
+}
+
+app.post('/api/analyze-browser-rescue', handleBrowserRescueAnalysis);
+app.post('/api/analyze-rescue', handleBrowserRescueAnalysis);
+
 app.post('/api/interpret-user-request', async (req, res) => {
   const {
     transcript,
@@ -571,7 +747,7 @@ app.post('/api/interpret-user-request', async (req, res) => {
 
 Return valid JSON only with this exact shape:
 {
-  "intent": "browser_task|browser_assistive|describe_screen|summarize_screen|screen_question|smart_home|chat|cancel|clarify|none",
+  "intent": "browser_task|browser_assistive|browser_rescue|describe_screen|summarize_screen|screen_question|smart_home|chat|cancel|clarify|none",
   "confidence": "high|medium|low",
   "normalizedInstruction": "string or null",
   "spokenResponse": "short spoken answer or null",
@@ -579,7 +755,7 @@ Return valid JSON only with this exact shape:
   "browserAssistiveIntent": "actions|buttons|fields|errors|links|headings|null"
 }
 
-Use browser_task for website actions, browser_assistive for page walkthrough requests, describe_screen or summarize_screen for screen understanding, screen_question for a specific question about what is visible, smart_home for natural device commands, chat for a short spoken reply, cancel for explicit stop/cancel, clarify for ambiguous requests, and none for silence or nonsense.
+Use browser_task for website actions, browser_assistive for page walkthrough requests, browser_rescue when the user says they are stuck on the current page, describe_screen or summarize_screen for screen understanding, screen_question for a specific question about what is visible, smart_home for natural device commands, chat for a short spoken reply, cancel for explicit stop/cancel, clarify for ambiguous requests, and none for silence or nonsense.
 
 Understand paraphrases and follow-ups from recent context. Screen-focused requests must still classify correctly even when no browser is open. Do not turn a screen request into chat just because the browser is closed. Browser availability affects execution readiness, not intent classification. Keep spokenResponse and clarificationQuestion short.`;
 
@@ -589,12 +765,15 @@ Respond with valid JSON only.
 
 Guidance:
 - If the user is asking Sally to go somewhere, search, click, type, compose, submit a form, or do a multi-step website action, use browser_task.
+- Long multi-clause requests with several destinations, tabs, remembered facts, or email drafting are always browser_task unless a required entity is missing.
+- If the user says they are stuck on the current page or wants Sally to choose the next helpful step, use browser_rescue.
 - If they are asking what is on screen or what page elements exist, use describe_screen, summarize_screen, screen_question, or browser_assistive as appropriate.
 - Requests about the desktop or current screen still count as screen intents when no browser is open.
 - Do not respond with a browser-unavailable chat answer for an obvious describe_screen, summarize_screen, or screen_question request.
 - If they are just talking to Sally or asking what Sally can do, use chat with a short spokenResponse.
 - If the request is too vague to act on safely, use clarify with one short clarificationQuestion.
-- Use normalizedInstruction to preserve the task in short plain language.`;
+- Use normalizedInstruction to preserve the task in short plain language.
+- Preserve important entities such as site names, company names, and email addresses in normalizedInstruction.`;
 
   try {
     const raw = await generateTextJson({
@@ -698,6 +877,11 @@ Rules:
 - Keep the activeSubtask narrow enough for Sally's next-action loop.
 - Use rememberedFacts for names, email addresses, dates, prices, selected links, and comparison facts.
 - Use the current tabs and page context to avoid redundant work.
+- If the goal spans multiple sites, tabs, or phases, preserve them as separate subtasks instead of collapsing everything into one generic search.
+- Reuse already-open tabs when possible before opening a new tab.
+- If the user wants facts from one page used in an email or form on another page, gather the facts first, store them in rememberedFacts, then draft or fill using those facts.
+- If the user asks for confirmation before sending or submitting, keep that as the final step and do not mark the task complete until Sally is paused for confirmation.
+- If the user says "the company website" but does not identify which company, use status=clarify with a short question.
 - Use status=complete when the task is already done.
 - Use status=clarify only when the user must answer a short question.
 - Use status=blocked when the site or missing data stops progress.
@@ -712,6 +896,11 @@ Guidance:
 - Use the current page and open tabs to avoid repeating work.
 - Keep the activeSubtask narrow enough for Sally's next-action browser loop.
 - Use rememberedFacts for reusable details the user may refer to later, like names, email addresses, dates, prices, or chosen links.
+- If the goal spans multiple sites, tabs, or phases, create distinct subtasks for them.
+- Reuse already-open Gmail, LinkedIn, and other relevant tabs when available.
+- For research-then-draft tasks, gather and remember facts before moving to the drafting step.
+- If the goal includes sending or submitting only after user approval, stop in a confirmation-ready state instead of marking the task complete.
+- If "the company website" is requested without a specific company, ask a short clarification question.
 - If the goal is already done, return status="complete".
 - If the task genuinely needs user input, return status="clarify" with one short clarificationQuestion.
 - If the task is blocked by the site or missing data, return status="blocked" with blockedReason.`;

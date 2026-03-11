@@ -86,6 +86,7 @@ export default function SallyBarWindow() {
   const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState('');
+  const [statusTranscript, setStatusTranscript] = useState('');
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -137,7 +138,8 @@ export default function SallyBarWindow() {
   }, [isMicMuted]);
 
   const isVoiceCycleActive = isRecording || state === 'processing' || state === 'acting' || state === 'speaking';
-  const isTranscriptVisible = !isComposerOpen && (isVoiceCycleActive || (!!liveTranscript && state !== 'idle'));
+  const transcriptText = statusTranscript || liveTranscript;
+  const isTranscriptVisible = !isComposerOpen && (isVoiceCycleActive || (!!transcriptText && state !== 'idle'));
 
   useEffect(() => {
     const layout: SallyBarLayout = isComposerOpen
@@ -173,9 +175,19 @@ export default function SallyBarWindow() {
         }
         prevState = nextState;
         setState(nextState);
+        if (nextState === 'listening') {
+          setStatusTranscript('');
+        }
         if (nextState === 'awaiting_response') {
           setIsComposerOpen(true);
         }
+      }),
+      ipc.subscribe('sally:chat', (data) => {
+        const prefix = data.role === 'user' ? 'You: ' : data.role === 'assistant' ? 'Sally: ' : '';
+        setStatusTranscript(`${prefix}${data.text}`.trim());
+      }),
+      ipc.subscribe('sally:step', (data) => {
+        setStatusTranscript(`Step: ${data.action} - ${data.details}`.trim());
       }),
       ipc.subscribe('sally:mic-muted-changed', (data) => {
         setIsMicMuted(data.muted);
@@ -200,7 +212,10 @@ export default function SallyBarWindow() {
     // and recording has stopped. This avoids the race where isRecording=false
     // briefly while state is still idle before handleTranscription sets 'processing'.
     if (state === 'idle' && wasActive && !isRecording) {
-      const timer = setTimeout(() => setLiveTranscript(''), 3000);
+      const timer = setTimeout(() => {
+        setLiveTranscript('');
+        setStatusTranscript('');
+      }, 3000);
       return () => clearTimeout(timer);
     }
   }, [isRecording, state]);
@@ -209,7 +224,7 @@ export default function SallyBarWindow() {
     const scroller = transcriptScrollRef.current;
     if (!scroller) return;
     scroller.scrollLeft = scroller.scrollWidth;
-  }, [liveTranscript, isTranscriptVisible]);
+  }, [transcriptText, isTranscriptVisible]);
 
   useEffect(() => {
     const unsubStart = window.electron.on('hotkey:start-recording', () => startRecording());
@@ -950,8 +965,8 @@ export default function SallyBarWindow() {
               overflowY: 'hidden',
               whiteSpace: 'nowrap',
               position: 'relative',
-              maskImage: liveTranscript ? 'linear-gradient(to left, transparent 0%, black 10%, black 100%)' : 'none',
-              WebkitMaskImage: liveTranscript ? 'linear-gradient(to left, transparent 0%, black 10%, black 100%)' : 'none',
+              maskImage: transcriptText ? 'linear-gradient(to left, transparent 0%, black 10%, black 100%)' : 'none',
+              WebkitMaskImage: transcriptText ? 'linear-gradient(to left, transparent 0%, black 10%, black 100%)' : 'none',
             }}
           >
             <span
@@ -960,11 +975,11 @@ export default function SallyBarWindow() {
                 paddingRight: 20,
                 fontSize: 12,
                 fontWeight: 500,
-                color: liveTranscript ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.52)',
+                color: transcriptText ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.52)',
                 transform: 'translateY(-1px)',
               }}
             >
-              {liveTranscript || transcriptPlaceholder}
+              {transcriptText || transcriptPlaceholder}
             </span>
           </div>
         </div>

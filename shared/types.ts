@@ -17,6 +17,19 @@ export interface ChatMessage {
   isStreaming?: boolean;
 }
 
+export interface OverlayHighlightRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OverlayHighlightPayload {
+  mode: 'border' | 'target';
+  label?: string | null;
+  rect?: OverlayHighlightRect | null;
+}
+
 export interface SallyConfig {
   provider: SallyProvider;
   hasProviderKey: boolean;
@@ -77,6 +90,8 @@ export interface IpcChannels {
   'sally:state-changed': { request: never; response: never; broadcast: { state: SallyState; text?: string } };
   'sally:step': { request: never; response: never; broadcast: AutomationStep };
   'sally:chat': { request: never; response: never; broadcast: ChatMessage };
+  'sally:overlay-highlight': { request: never; response: never; broadcast: OverlayHighlightPayload };
+  'sally:overlay-clear': { request: never; response: never; broadcast: void };
   'sally:tts-audio': { request: never; response: never; broadcast: { audioBase64: string; id: string } };
   'sally:tts-stop': { request: never; response: never; broadcast: void };
   'sally:tts-playback-error': { request: { id: string; message: string }; response: never; broadcast: never };
