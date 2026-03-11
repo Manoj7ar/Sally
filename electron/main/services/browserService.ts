@@ -2,502 +2,28 @@
 
 import { BrowserWindow, screen } from 'electron';
 import type { GeminiAction } from './geminiService.js';
-import type { BrowserSnapshot, BrowserSourceMode, PageContext } from './pageContext.js';
+import type { BrowserSnapshot, BrowserSourceMode, BrowserTabInfo, PageContext } from './pageContext.js';
+import { runDomTaskInPage } from './browserDomRuntime.js';
 
 const BROWSER_PARTITION = 'persist:sally-browser';
-const MAX_INTERACTIVE_ELEMENTS = 24;
+const MAX_INTERACTIVE_ELEMENTS = 40;
 const MAX_VISIBLE_MESSAGES = 8;
 const MAX_HEADINGS = 8;
 const MIN_SETTLE_DELAY_MS = 600;
 const MAX_SETTLE_DELAY_MS = 3_000;
 
-function extractPageContextInPage(options: {
-  maxInteractiveElements: number;
-  maxVisibleMessages: number;
-  maxHeadings: number;
-}) {
-  const normalize = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').trim();
-  const getTextFromIds = (ids: string): string => ids
-    .split(/\s+/)
-    .map((id) => normalize(document.getElementById(id)?.textContent))
-    .filter(Boolean)
-    .join(' ');
-
-  const isVisible = (element: Element): element is HTMLElement => {
-    if (!(element instanceof HTMLElement)) {
-      return false;
-    }
-
-    const style = window.getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    if (style.display === 'none' || style.visibility === 'hidden') {
-      return false;
-    }
-
-    if (Number(style.opacity || '1') <= 0.05) {
-      return false;
-    }
-
-    if (rect.width < 4 || rect.height < 4) {
-      return false;
-    }
-
-    return rect.bottom >= 0
-      && rect.right >= 0
-      && rect.top <= window.innerHeight
-      && rect.left <= window.innerWidth;
-  };
-
-  const inferRole = (element: HTMLElement): string => {
-    const explicitRole = normalize(element.getAttribute('role'));
-    if (explicitRole) {
-      return explicitRole.toLowerCase();
-    }
-
-    const tagName = element.tagName.toLowerCase();
-    if (tagName === 'a' && element.hasAttribute('href')) return 'link';
-    if (tagName === 'button') return 'button';
-    if (tagName === 'textarea') return 'textbox';
-    if (tagName === 'select') return 'combobox';
-    if (tagName === 'summary') return 'button';
-    if (tagName === 'input') {
-      const type = normalize(element.getAttribute('type')).toLowerCase();
-      if (type === 'checkbox') return 'checkbox';
-      if (type === 'radio') return 'radio';
-      if (type === 'search') return 'searchbox';
-      if (type === 'submit' || type === 'button' || type === 'reset') return 'button';
-      return 'textbox';
-    }
-    if (element.getAttribute('contenteditable') === 'true') return 'textbox';
-    return 'generic';
-  };
-
-  const getDescriptor = (element: HTMLElement) => {
-    const ariaLabel = normalize(element.getAttribute('aria-label'));
-    const labelledBy = normalize(getTextFromIds(element.getAttribute('aria-labelledby') || ''));
-    const labelSource = element as HTMLElement & { labels?: NodeListOf<HTMLLabelElement> | null };
-    const labels = labelSource.labels
-      ? Array.from(labelSource.labels).map((label) => normalize(label.textContent)).filter(Boolean).join(' ')
-      : '';
-    const alt = normalize(element.getAttribute('alt'));
-    const title = normalize(element.getAttribute('title'));
-    const placeholder = normalize(element.getAttribute('placeholder'));
-    const name = normalize(element.getAttribute('name'));
-    const text = normalize(element.innerText || element.textContent);
-    const label = ariaLabel || labelledBy || labels || alt || title || placeholder || name || text;
-
-    return {
-      label,
-      text,
-      placeholder,
-      type: normalize(element.getAttribute('type')).toLowerCase() || undefined,
-      name,
-    };
-  };
-
-  const interactiveSelectors = [
-    'a[href]',
-    'button',
-    'input',
-    'textarea',
-    'select',
-    'summary',
-    '[role]',
-    '[tabindex]:not([tabindex="-1"])',
-    '[contenteditable="true"]',
-  ].join(',');
-
-  const interactiveElements = Array.from(document.querySelectorAll(interactiveSelectors))
-    .filter(isVisible)
-    .map((element) => {
-      const descriptor = getDescriptor(element);
-      const role = inferRole(element);
-      return {
-        element,
-        role,
-        tagName: element.tagName.toLowerCase(),
-        ...descriptor,
-        disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
-        checked: (element as HTMLInputElement).checked === true || element.getAttribute('aria-checked') === 'true',
-        selected: (element as HTMLOptionElement).selected === true || element.getAttribute('aria-selected') === 'true',
-      };
-    })
-    .filter((entry) => entry.role !== 'generic' || Boolean(entry.label || entry.text || entry.placeholder))
-    .slice(0, options.maxInteractiveElements)
-    .map((entry, index) => ({
-      index: index + 1,
-      role: entry.role,
-      tagName: entry.tagName,
-      label: entry.label,
-      text: entry.text,
-      placeholder: entry.placeholder,
-      type: entry.type,
-      disabled: entry.disabled,
-      checked: entry.checked,
-      selected: entry.selected,
-    }));
-
-  const headings = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"]'))
-    .filter(isVisible)
-    .map((element) => normalize((element as HTMLElement).innerText || element.textContent))
-    .filter(Boolean)
-    .slice(0, options.maxHeadings);
-
-  const landmarks = Array.from(document.querySelectorAll('[role="banner"], [role="navigation"], [role="main"], [role="contentinfo"], [role="search"], header, nav, main, footer, aside'))
-    .filter(isVisible)
-    .map((element) => {
-      const node = element as HTMLElement;
-      const role = normalize(node.getAttribute('role')) || node.tagName.toLowerCase();
-      const name = getDescriptor(node).label;
-      return name ? `${role}: ${name}` : role;
-    })
-    .filter(Boolean)
-    .slice(0, 8);
-
-  const dialogs = Array.from(document.querySelectorAll('dialog, [role="dialog"], [aria-modal="true"]'))
-    .filter(isVisible)
-    .map((element) => getDescriptor(element as HTMLElement).label || normalize((element as HTMLElement).innerText || element.textContent))
-    .filter(Boolean)
-    .slice(0, 4);
-
-  const messageSelectors = [
-    '[role="alert"]',
-    '[role="status"]',
-    '[aria-live]',
-    '.error',
-    '.errors',
-    '.toast',
-    '.notification',
-    '.alert',
-    '.warning',
-    '[data-error]',
-    '[data-testid*="error"]',
-  ].join(',');
-
-  const visibleMessages = Array.from(document.querySelectorAll(messageSelectors))
-    .filter(isVisible)
-    .map((element) => normalize((element as HTMLElement).innerText || element.textContent))
-    .filter(Boolean)
-    .slice(0, options.maxVisibleMessages);
-
-  const activeElement = document.activeElement instanceof HTMLElement
-    ? (() => {
-      const descriptor = getDescriptor(document.activeElement);
-      const role = inferRole(document.activeElement);
-      return normalize([role, descriptor.label || descriptor.text || descriptor.placeholder].filter(Boolean).join(' ')) || null;
-    })()
-    : null;
-
-  const semanticParts: string[] = [];
-  const title = normalize(document.title);
-  if (title) semanticParts.push(`Page title: ${title}`);
-  if (headings.length > 0) semanticParts.push(`Top heading: ${headings[0]}`);
-  if (interactiveElements.length > 0) semanticParts.push(`${interactiveElements.length} visible interactive controls`);
-  if (visibleMessages.length > 0) semanticParts.push(`${visibleMessages.length} visible messages`);
-
-  return {
-    interactiveElements,
-    headings,
-    landmarks,
-    dialogs,
-    visibleMessages,
-    activeElement,
-    semanticSummary: semanticParts.join('. '),
-  };
-}
-
-function runDomActionInPage(payload: { action: GeminiAction }) {
-  const { action } = payload;
-
-  const normalize = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-  const getTextFromIds = (ids: string): string => ids
-    .split(/\s+/)
-    .map((id) => normalize(document.getElementById(id)?.textContent))
-    .filter(Boolean)
-    .join(' ');
-
-  const isVisible = (element: Element): element is HTMLElement => {
-    if (!(element instanceof HTMLElement)) {
-      return false;
-    }
-
-    const style = window.getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    if (style.display === 'none' || style.visibility === 'hidden') {
-      return false;
-    }
-    if (Number(style.opacity || '1') <= 0.05) {
-      return false;
-    }
-    if (rect.width < 4 || rect.height < 4) {
-      return false;
-    }
-
-    return rect.bottom >= 0
-      && rect.right >= 0
-      && rect.top <= window.innerHeight
-      && rect.left <= window.innerWidth;
-  };
-
-  const inferRole = (element: HTMLElement): string => {
-    const explicitRole = normalize(element.getAttribute('role'));
-    if (explicitRole) return explicitRole;
-
-    const tagName = element.tagName.toLowerCase();
-    if (tagName === 'a' && element.hasAttribute('href')) return 'link';
-    if (tagName === 'button') return 'button';
-    if (tagName === 'textarea') return 'textbox';
-    if (tagName === 'select') return 'combobox';
-    if (tagName === 'summary') return 'button';
-    if (tagName === 'input') {
-      const type = normalize(element.getAttribute('type'));
-      if (type === 'checkbox') return 'checkbox';
-      if (type === 'radio') return 'radio';
-      if (type === 'search') return 'searchbox';
-      if (type === 'submit' || type === 'button' || type === 'reset') return 'button';
-      return 'textbox';
-    }
-    if (element.getAttribute('contenteditable') === 'true') return 'textbox';
-    return 'generic';
-  };
-
-  const getDescriptor = (element: HTMLElement) => {
-    const ariaLabel = normalize(element.getAttribute('aria-label'));
-    const labelledBy = normalize(getTextFromIds(element.getAttribute('aria-labelledby') || ''));
-    const labelSource = element as HTMLElement & { labels?: NodeListOf<HTMLLabelElement> | null };
-    const labels = labelSource.labels
-      ? Array.from(labelSource.labels).map((label) => normalize(label.textContent)).filter(Boolean).join(' ')
-      : '';
-    const alt = normalize(element.getAttribute('alt'));
-    const title = normalize(element.getAttribute('title'));
-    const placeholder = normalize(element.getAttribute('placeholder'));
-    const name = normalize(element.getAttribute('name'));
-    const text = normalize(element.innerText || element.textContent);
-    const label = ariaLabel || labelledBy || labels || alt || title || placeholder || name || text;
-    return { label, text, placeholder, name };
-  };
-
-  const interactiveSelectors = [
-    'a[href]',
-    'button',
-    'input',
-    'textarea',
-    'select',
-    'summary',
-    '[role]',
-    '[tabindex]:not([tabindex="-1"])',
-    '[contenteditable="true"]',
-  ].join(',');
-
-  const inventory = Array.from(document.querySelectorAll(interactiveSelectors))
-    .filter(isVisible)
-    .map((element, index) => {
-      const node = element as HTMLElement;
-      const descriptor = getDescriptor(node);
-      const role = inferRole(node);
-      const rect = node.getBoundingClientRect();
-      return {
-        index: index + 1,
-        element: node,
-        role,
-        tagName: node.tagName.toLowerCase(),
-        label: descriptor.label,
-        text: descriptor.text,
-        placeholder: descriptor.placeholder,
-        name: descriptor.name,
-        disabled: node.matches(':disabled') || node.getAttribute('aria-disabled') === 'true',
-        type: normalize(node.getAttribute('type')),
-        rect: {
-          x: Math.round(rect.left + rect.width / 2),
-          y: Math.round(rect.top + rect.height / 2),
-        },
-      };
-    })
-    .filter((entry) => entry.role !== 'generic' || Boolean(entry.label || entry.text || entry.placeholder));
-
-  const desiredSelector = normalize(action.selector);
-
-  const roleWhitelistByAction: Partial<Record<GeminiAction['type'], string[]>> = {
-    click: ['button', 'link', 'tab', 'menuitem', 'checkbox', 'radio', 'switch', 'generic'],
-    hover: ['button', 'link', 'tab', 'menuitem', 'generic'],
-    focus: ['textbox', 'searchbox', 'combobox', 'button', 'link', 'generic'],
-    fill: ['textbox', 'searchbox', 'combobox'],
-    select: ['combobox', 'listbox'],
-    check: ['checkbox', 'radio', 'switch'],
-    uncheck: ['checkbox', 'switch'],
-  };
-
-  const allowedRoles = roleWhitelistByAction[action.type] || null;
-  const candidates = inventory.filter((entry) => !entry.disabled && (!allowedRoles || allowedRoles.includes(entry.role)));
-
-  const scoreCandidate = (entry: typeof candidates[number]): number => {
-    if (!desiredSelector) {
-      return 1;
-    }
-
-    const haystacks = [
-      entry.label,
-      entry.text,
-      entry.placeholder,
-      entry.name,
-      entry.role,
-      entry.tagName,
-    ].map(normalize).filter(Boolean);
-
-    let score = 0;
-    for (const value of haystacks) {
-      if (value === desiredSelector) {
-        score = Math.max(score, 120);
-      } else if (value.startsWith(desiredSelector)) {
-        score = Math.max(score, 90);
-      } else if (value.includes(desiredSelector)) {
-        score = Math.max(score, 70);
-      }
-
-      const desiredTokens = desiredSelector.split(' ').filter(Boolean);
-      const tokenHits = desiredTokens.filter((token) => value.includes(token)).length;
-      if (tokenHits > 0) {
-        score = Math.max(score, 35 + tokenHits * 10);
-      }
-    }
-
-    return score;
-  };
-
-  let target: typeof candidates[number] | undefined;
-  if (typeof action.index === 'number' && action.index > 0 && desiredSelector) {
-    const ranked = candidates
-      .map((entry) => ({ entry, score: scoreCandidate(entry) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score || a.entry.index - b.entry.index);
-    target = ranked[action.index - 1]?.entry;
-  }
-
-  if (!target && typeof action.index === 'number' && action.index > 0) {
-    target = candidates.find((entry) => entry.index === action.index) || candidates[action.index - 1];
-  }
-
-  if (!target) {
-    const ranked = candidates
-      .map((entry) => ({ entry, score: scoreCandidate(entry) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score || a.entry.index - b.entry.index);
-    target = ranked[0]?.entry;
-  }
-
-  if (!target) {
-    return { ok: false, message: 'target_not_found' };
-  }
-
-  target.element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-  const descriptor = target.label || target.text || target.placeholder || target.role || target.tagName;
-
-  const setInputValue = (element: HTMLElement, value: string) => {
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      element.focus();
-      element.value = value;
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    }
-
-    if (element instanceof HTMLElement && element.getAttribute('contenteditable') === 'true') {
-      element.focus();
-      element.textContent = value;
-      element.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
-      return true;
-    }
-
-    return false;
-  };
-
-  switch (action.type) {
-    case 'click': {
-      if (target.element instanceof HTMLAnchorElement) {
-        target.element.target = '_self';
-      }
-      target.element.focus();
-      target.element.click();
-      return { ok: true, message: `Clicked "${descriptor}"`, targetIndex: target.index };
-    }
-
-    case 'fill': {
-      const value = String(action.value ?? '');
-      if (!setInputValue(target.element, value)) {
-        return { ok: false, message: 'target_not_fillable' };
-      }
-      return { ok: true, message: `Typed "${value}" into "${descriptor}"`, targetIndex: target.index };
-    }
-
-    case 'select': {
-      const value = normalize(action.value);
-      if (target.element instanceof HTMLSelectElement) {
-        const option = Array.from(target.element.options).find((candidate) => {
-          const optionText = normalize(candidate.textContent);
-          return normalize(candidate.value) === value || optionText === value || optionText.includes(value);
-        });
-
-        if (!option) {
-          return { ok: false, message: 'option_not_found' };
-        }
-
-        target.element.value = option.value;
-        target.element.dispatchEvent(new Event('input', { bubbles: true }));
-        target.element.dispatchEvent(new Event('change', { bubbles: true }));
-        return { ok: true, message: `Selected "${option.textContent || option.value}" in "${descriptor}"`, targetIndex: target.index };
-      }
-
-      if (setInputValue(target.element, String(action.value ?? ''))) {
-        return { ok: true, message: `Selected "${String(action.value ?? '')}" in "${descriptor}"`, targetIndex: target.index };
-      }
-
-      return { ok: false, message: 'target_not_selectable' };
-    }
-
-    case 'hover': {
-      target.element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, view: window }));
-      target.element.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, view: window }));
-      return { ok: true, message: `Hovered over "${descriptor}"`, point: target.rect, targetIndex: target.index };
-    }
-
-    case 'focus': {
-      target.element.focus();
-      return { ok: document.activeElement === target.element, message: `Focused "${descriptor}"`, targetIndex: target.index };
-    }
-
-    case 'check':
-    case 'uncheck': {
-      const desiredChecked = action.type === 'check';
-      if (target.element instanceof HTMLInputElement && ['checkbox', 'radio'].includes(target.element.type)) {
-        target.element.focus();
-        target.element.checked = desiredChecked;
-        target.element.dispatchEvent(new Event('input', { bubbles: true }));
-        target.element.dispatchEvent(new Event('change', { bubbles: true }));
-        return {
-          ok: target.element.checked === desiredChecked,
-          message: `${desiredChecked ? 'Checked' : 'Unchecked'} "${descriptor}"`,
-          targetIndex: target.index,
-        };
-      }
-
-      target.element.setAttribute('aria-checked', desiredChecked ? 'true' : 'false');
-      target.element.click();
-      return {
-        ok: true,
-        message: `${desiredChecked ? 'Checked' : 'Unchecked'} "${descriptor}"`,
-        targetIndex: target.index,
-      };
-    }
-
-    default:
-      return { ok: false, message: 'unsupported_dom_action' };
-  }
+interface BrowserTabState {
+  id: string;
+  window: BrowserWindow;
+  createdAt: number;
 }
 
 class BrowserService {
-  private browserWindow: BrowserWindow | null = null;
+  private tabs: BrowserTabState[] = [];
+  private activeTabId: string | null = null;
   private launchNotice: string | null = null;
   private controlMode: BrowserSourceMode = 'electron_browser';
+  private nextTabOrdinal = 1;
 
   getSourceMode(): BrowserSourceMode {
     return this.controlMode;
@@ -510,32 +36,36 @@ class BrowserService {
   }
 
   async launch(startUrl?: string): Promise<BrowserWindow> {
-    const window = await this.ensureWindow(startUrl);
-
-    if (startUrl && this.browserWindow === window) {
-      await this.ensurePageUrl(window, startUrl);
-    } else if (!this.hasRealContent(window.webContents.getURL())) {
-      await this.ensurePageUrl(window, 'https://www.google.com');
+    let tab = this.getActiveTab();
+    if (!tab) {
+      this.launchNotice = 'Opening Sally browser for this task.';
+      tab = await this.createTab(startUrl || 'https://www.google.com', true);
+    } else {
+      if (startUrl) {
+        await this.ensurePageUrl(tab.window, this.coerceUrl(startUrl));
+      } else if (!this.hasRealContent(tab.window.webContents.getURL())) {
+        await this.ensurePageUrl(tab.window, 'https://www.google.com');
+      }
+      await this.showTab(tab.id);
     }
 
-    if (window.isMinimized()) {
-      window.restore();
-    }
-    window.show();
-    window.focus();
-
-    return window;
+    return tab.window;
   }
 
   isRunning(): boolean {
-    return Boolean(this.browserWindow && !this.browserWindow.isDestroyed());
+    this.cleanupDeadTabs();
+    return this.tabs.length > 0;
   }
 
   async close(): Promise<void> {
-    if (this.browserWindow && !this.browserWindow.isDestroyed()) {
-      const closingWindow = this.browserWindow;
-      this.browserWindow = null;
-      closingWindow.destroy();
+    const tabs = [...this.tabs];
+    this.tabs = [];
+    this.activeTabId = null;
+
+    for (const tab of tabs) {
+      if (!tab.window.isDestroyed()) {
+        tab.window.destroy();
+      }
     }
   }
 
@@ -547,12 +77,18 @@ class BrowserService {
     };
   }
 
+  listTabs(): BrowserTabInfo[] {
+    this.cleanupDeadTabs();
+    return this.tabs.map((tab) => this.toTabInfo(tab));
+  }
+
   async getBrowserWindowBounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
-    if (!this.browserWindow || this.browserWindow.isDestroyed()) {
+    const tab = this.getActiveTab();
+    if (!tab || tab.window.isDestroyed()) {
       return null;
     }
 
-    return this.browserWindow.getBounds();
+    return tab.window.getBounds();
   }
 
   async takeScreenshot(): Promise<string> {
@@ -562,18 +98,20 @@ class BrowserService {
   }
 
   async captureBrowserSnapshot(): Promise<BrowserSnapshot> {
-    const window = await this.launch();
+    const tab = this.getActiveTab() || { id: '', window: await this.launch(), createdAt: Date.now() };
     const [screenshot, pageContext] = await Promise.all([
       this.takeScreenshot(),
-      this.extractPageContext(window),
+      this.extractPageContext(tab.window),
     ]);
 
     return {
       sourceMode: this.controlMode,
       screenshot,
-      pageUrl: window.webContents.getURL(),
-      pageTitle: window.webContents.getTitle(),
+      pageUrl: tab.window.webContents.getURL(),
+      pageTitle: tab.window.webContents.getTitle(),
       pageContext,
+      tabs: this.listTabs(),
+      activeTabId: this.activeTabId,
     };
   }
 
@@ -585,15 +123,27 @@ class BrowserService {
       switch (action.type) {
         case 'navigate': {
           if (!action.url) return 'No URL provided';
-          let url = action.url.trim();
-          if (!/^https?:\/\//i.test(url)) {
-            url = `https://${url}`;
-          }
-
+          const url = this.coerceUrl(action.url);
           const beforeUrl = contents.getURL();
           await this.ensurePageUrl(window, url);
           await this.waitForSettle('navigate');
           return contents.getURL() !== beforeUrl ? `Navigated to ${url}` : `Action failed: did not navigate to ${url}`;
+        }
+
+        case 'open_tab': {
+          const rawUrl = action.url || action.selector || action.value || '';
+          const tab = await this.openTab(rawUrl || undefined, { activate: true });
+          await this.waitForSettle('open_tab');
+          return `Opened new tab "${tab.title || tab.url}"`;
+        }
+
+        case 'switch_tab': {
+          const resolved = await this.switchTab(action);
+          if (!resolved) {
+            return 'Action failed: could not find a matching tab';
+          }
+          await this.waitForSettle('switch_tab');
+          return `Switched to tab "${resolved.title || resolved.url}"`;
         }
 
         case 'press': {
@@ -658,12 +208,13 @@ class BrowserService {
   }
 
   async waitForSettle(actionType: string): Promise<void> {
-    if (!this.browserWindow || this.browserWindow.isDestroyed()) {
+    const tab = this.getActiveTab();
+    if (!tab || tab.window.isDestroyed()) {
       return;
     }
 
-    const contents = this.browserWindow.webContents;
-    const needsLongerWait = ['navigate', 'click', 'back', 'select'].includes(actionType);
+    const contents = tab.window.webContents;
+    const needsLongerWait = ['navigate', 'click', 'back', 'select', 'open_tab', 'switch_tab'].includes(actionType);
     const timeoutMs = needsLongerWait ? MAX_SETTLE_DELAY_MS : MIN_SETTLE_DELAY_MS;
 
     await Promise.race([
@@ -688,11 +239,76 @@ class BrowserService {
     await new Promise((resolve) => setTimeout(resolve, MIN_SETTLE_DELAY_MS));
   }
 
-  private async ensureWindow(initialUrl?: string): Promise<BrowserWindow> {
-    if (this.browserWindow && !this.browserWindow.isDestroyed()) {
-      return this.browserWindow;
+  async openTab(url?: string, options: { activate?: boolean } = {}): Promise<BrowserTabInfo> {
+    const tab = await this.createTab(url || 'https://www.google.com', options.activate !== false);
+    return this.toTabInfo(tab);
+  }
+
+  private async switchTab(action: GeminiAction): Promise<BrowserTabInfo | null> {
+    const tab = this.resolveTab(action);
+    if (!tab) {
+      return null;
     }
 
+    await this.showTab(tab.id);
+    return this.toTabInfo(tab);
+  }
+
+  private resolveTab(action: GeminiAction): BrowserTabState | null {
+    const tabs = this.getLiveTabs();
+    if (tabs.length === 0) {
+      return null;
+    }
+
+    if (action.tabId) {
+      const exact = tabs.find((tab) => tab.id === action.tabId);
+      if (exact) {
+        return exact;
+      }
+    }
+
+    if (typeof action.index === 'number' && action.index > 0 && action.index <= tabs.length) {
+      return tabs[action.index - 1] || null;
+    }
+
+    const query = [action.selector, action.value, action.url]
+      .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+      .map((item) => item.trim().toLowerCase())
+      .join(' ');
+
+    if (!query) {
+      return this.getActiveTab();
+    }
+
+    const scoreTab = (tab: BrowserTabState): number => {
+      const title = tab.window.webContents.getTitle().toLowerCase();
+      const url = tab.window.webContents.getURL().toLowerCase();
+      let score = 0;
+
+      if (title === query || url === query) score = Math.max(score, 120);
+      if (title.includes(query)) score = Math.max(score, 90);
+      if (url.includes(query)) score = Math.max(score, 85);
+
+      const queryTokens = query.split(/\s+/).filter(Boolean);
+      const hitCount = queryTokens.filter((token) => title.includes(token) || url.includes(token)).length;
+      if (hitCount > 0) {
+        score = Math.max(score, 30 + hitCount * 10);
+      }
+
+      if (tab.id === this.activeTabId) {
+        score -= 5;
+      }
+
+      return score;
+    };
+
+    return tabs
+      .map((tab) => ({ tab, score: scoreTab(tab) }))
+      .filter((entry) => entry.score > 0)
+      .sort((left, right) => right.score - left.score || left.tab.createdAt - right.tab.createdAt)[0]?.tab || null;
+  }
+
+  private async createTab(initialUrl: string, activate: boolean): Promise<BrowserTabState> {
     const targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || screen.getPrimaryDisplay();
     const width = Math.min(1320, Math.max(960, targetDisplay.workArea.width - 80));
     const height = Math.min(940, Math.max(720, targetDisplay.workArea.height - 80));
@@ -717,8 +333,14 @@ class BrowserService {
       },
     });
 
+    const tab: BrowserTabState = {
+      id: `tab-${this.nextTabOrdinal++}`,
+      window,
+      createdAt: Date.now(),
+    };
+
     window.webContents.setWindowOpenHandler(({ url }) => {
-      void this.ensurePageUrl(window, url);
+      void this.openTab(url, { activate: true });
       return { action: 'deny' };
     });
 
@@ -726,26 +348,115 @@ class BrowserService {
       childWindow.close();
     });
 
-    window.once('ready-to-show', () => {
-      if (!window.isDestroyed()) {
-        window.show();
+    window.on('focus', () => {
+      if (this.tabs.some((entry) => entry.id === tab.id)) {
+        this.activeTabId = tab.id;
       }
     });
 
     window.on('closed', () => {
-      if (this.browserWindow === window) {
-        this.browserWindow = null;
-      }
+      this.handleClosedTab(tab.id);
     });
 
-    this.browserWindow = window;
-    this.launchNotice = 'Opening Sally browser for this task.';
-    await this.ensurePageUrl(window, initialUrl || 'https://www.google.com');
-    return window;
+    this.tabs.push(tab);
+    await this.ensurePageUrl(window, this.coerceUrl(initialUrl));
+
+    if (activate || !this.activeTabId) {
+      await this.showTab(tab.id);
+    } else {
+      window.hide();
+    }
+
+    return tab;
+  }
+
+  private handleClosedTab(tabId: string): void {
+    this.tabs = this.tabs.filter((tab) => tab.id !== tabId && !tab.window.isDestroyed());
+    if (this.activeTabId === tabId) {
+      const nextTab = this.tabs[0] || null;
+      this.activeTabId = nextTab?.id || null;
+      if (nextTab) {
+        void this.showTab(nextTab.id);
+      }
+    }
+  }
+
+  private async showTab(tabId: string): Promise<void> {
+    this.cleanupDeadTabs();
+    const nextTab = this.tabs.find((tab) => tab.id === tabId);
+    if (!nextTab || nextTab.window.isDestroyed()) {
+      return;
+    }
+
+    for (const tab of this.tabs) {
+      if (tab.window.isDestroyed()) {
+        continue;
+      }
+
+      if (tab.id === tabId) {
+        if (tab.window.isMinimized()) {
+          tab.window.restore();
+        }
+        tab.window.show();
+        tab.window.focus();
+      } else {
+        tab.window.hide();
+      }
+    }
+
+    this.activeTabId = nextTab.id;
+  }
+
+  private getActiveTab(): BrowserTabState | null {
+    this.cleanupDeadTabs();
+    if (this.activeTabId) {
+      const tab = this.tabs.find((entry) => entry.id === this.activeTabId);
+      if (tab) {
+        return tab;
+      }
+    }
+
+    const fallback = this.tabs[0] || null;
+    this.activeTabId = fallback?.id || null;
+    return fallback;
+  }
+
+  private getLiveTabs(): BrowserTabState[] {
+    this.cleanupDeadTabs();
+    return [...this.tabs];
+  }
+
+  private cleanupDeadTabs(): void {
+    this.tabs = this.tabs.filter((tab) => !tab.window.isDestroyed());
+    if (this.activeTabId && !this.tabs.some((tab) => tab.id === this.activeTabId)) {
+      this.activeTabId = this.tabs[0]?.id || null;
+    }
+  }
+
+  private toTabInfo(tab: BrowserTabState): BrowserTabInfo {
+    return {
+      id: tab.id,
+      title: tab.window.webContents.getTitle(),
+      url: tab.window.webContents.getURL(),
+      isActive: tab.id === this.activeTabId,
+    };
   }
 
   private hasRealContent(url: string): boolean {
     return Boolean(url && url !== 'about:blank' && !url.startsWith('chrome://newtab'));
+  }
+
+  private coerceUrl(url: string): string {
+    const trimmed = url.trim();
+    if (!trimmed) {
+      return 'https://www.google.com';
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+      return trimmed;
+    }
+
+    return `https://${trimmed}`;
   }
 
   private async ensurePageUrl(window: BrowserWindow, url: string): Promise<void> {
@@ -758,17 +469,22 @@ class BrowserService {
   }
 
   private async extractPageContext(window: BrowserWindow): Promise<PageContext> {
-    return this.executeInPage(window, extractPageContextInPage, {
-      maxInteractiveElements: MAX_INTERACTIVE_ELEMENTS,
-      maxVisibleMessages: MAX_VISIBLE_MESSAGES,
-      maxHeadings: MAX_HEADINGS,
-    });
+    return this.executeInPage(window, runDomTaskInPage, {
+      mode: 'snapshot',
+      options: {
+        maxInteractiveElements: MAX_INTERACTIVE_ELEMENTS,
+        maxVisibleMessages: MAX_VISIBLE_MESSAGES,
+        maxHeadings: MAX_HEADINGS,
+      },
+    }) as Promise<PageContext>;
   }
 
   private async runDomAction(action: GeminiAction): Promise<{ ok: boolean; message: string }> {
     const window = await this.launch();
-    const result = await this.executeInPage(window, runDomActionInPage, { action });
-    return result;
+    return this.executeInPage(window, runDomTaskInPage, {
+      mode: 'action',
+      action,
+    }) as Promise<{ ok: boolean; message: string }>;
   }
 
   private async executeInPage<T, A>(window: BrowserWindow, fn: (args: A) => T, args: A): Promise<T> {

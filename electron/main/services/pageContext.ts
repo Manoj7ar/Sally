@@ -2,6 +2,9 @@ export type BrowserSourceMode = 'electron_browser';
 
 export interface PageContextElement {
   index: number;
+  targetId: string;
+  framePath: number[];
+  shadowPath: number[];
   role: string;
   tagName: string;
   label: string;
@@ -11,6 +14,10 @@ export interface PageContextElement {
   disabled?: boolean;
   checked?: boolean;
   selected?: boolean;
+  expanded?: boolean;
+  pressed?: boolean;
+  centerX?: number;
+  centerY?: number;
 }
 
 export interface PageContext {
@@ -23,10 +30,19 @@ export interface PageContext {
   semanticSummary: string;
 }
 
+export interface BrowserTabInfo {
+  id: string;
+  title: string;
+  url: string;
+  isActive: boolean;
+}
+
 export interface BrowserSnapshot {
   sourceMode: BrowserSourceMode;
   screenshot: string;
   pageUrl: string;
   pageTitle: string;
   pageContext: PageContext;
+  tabs: BrowserTabInfo[];
+  activeTabId: string | null;
 }
