@@ -164,10 +164,10 @@ graph TD
     EXEC --> SB
 
     GEMINI -.->|hosted path| CR[Google Cloud Run]
-    GEMINI -.->|local fallback| SDK[@google/genai SDK]
+    GEMINI -.->|local fallback| LOCALSDK[Google GenAI SDK]
 ```
 
-The important change from earlier versions of Sally is the browser ownership model. Instead of starting a separate automation browser for each task, Sally now owns and reuses one persistent Electron browser surface.
+The important change from earlier versions of Sally is the browser ownership model. Instead of starting a separate automation browser for each task, Sally now owns and reuses one persistent Electron browser surface. The local fallback path uses the `@google/genai` SDK directly from the desktop app.
 
 ---
 
