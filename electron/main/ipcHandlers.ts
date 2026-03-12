@@ -93,7 +93,7 @@ export function registerIpcHandlers(): void {
     return sessionManager.previewTranscription(data.audioBase64, data.mimeType, data.durationMs);
   });
 
-  ipcMain.handle('sally:handle-silence', async (_e, data: { durationMs?: number; peakLevel?: number; averageLevel?: number }) => {
+  ipcMain.handle('sally:handle-silence', async (_e, data: { durationMs?: number; peakLevel?: number; averageLevel?: number; mode?: 'default' | 'confirmation' }) => {
     await sessionManager.handleSilence(data);
   });
 

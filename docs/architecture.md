@@ -133,7 +133,7 @@ This is the core idea behind Sally: screenshot understanding plus direct UI cont
 | **TTS Service** | ElevenLabs API | Neural text-to-speech narration |
 | **Config Window** | React | Settings UI for keys, backend, audio, research toggle |
 | **Sally Bar** | React | Floating status pill and mic capture surface |
-| **Border Overlay** | React | Active-state blue border on the target display |
+| **Border Overlay** | React | Active-state blue border plus the full-screen waiting modal |
 | **Electron Store** | `electron-store` | Persistent config storage |
 
 ---
@@ -449,6 +449,8 @@ Renderer windows stay thin:
 - play back TTS audio
 - surface live feedback and previews
 
+During `awaiting_response`, the overlay renderer also owns the full-screen wait treatment: the browser blurs and dims, a centered message reads `Agent is waiting for your reply`, and an `End Agent` button cancels the whole task back to idle.
+
 That split keeps the sensitive automation and API orchestration logic in the main process.
 
 ---
@@ -585,7 +587,7 @@ stateDiagram-v2
 | `processing` | Visible | Blue border | Optional immediate acknowledgement |
 | `acting` | Visible | Blue border | Step narration |
 | `speaking` | Visible | Blue border | Active playback |
-| `awaiting_response` | Visible | Hidden | Waiting for user |
+| `awaiting_response` | Visible | Full-screen blurred wait overlay with `End Agent` | Waiting for user |
 
 ### Important state protections
 

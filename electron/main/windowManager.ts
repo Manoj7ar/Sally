@@ -4,22 +4,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { CONFIG_WINDOW, SALLY_BAR } from './utils/constants.js';
 import { store, STORE_KEYS } from './utils/store.js';
-import type { SallyBarLayout } from '../../shared/types.js';
+import type { OverlayHighlightPayload, SallyBarLayout } from '../../shared/types.js';
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
-
-type OverlayMode = 'border' | 'target';
-
-interface OverlayHighlightPayload {
-  mode: OverlayMode;
-  label?: string | null;
-  rect?: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null;
-}
+const WAITING_OVERLAY_MESSAGE = 'Agent is waiting for your reply';
+const WAITING_OVERLAY_ACTION = 'End Agent';
 
 let _isQuitting = false;
 export function setQuitting(val: boolean): void { _isQuitting = val; }
@@ -31,6 +20,7 @@ class WindowManager {
   private borderOverlayWindow: BrowserWindow | null = null;
   private borderOverlayTargetDisplayId: number | null = null;
   private overlayHighlightState: OverlayHighlightPayload | null = null;
+  private waitingOverlayState: OverlayHighlightPayload | null = null;
 
   private attachWindowDiagnostics(win: BrowserWindow, name: string): void {
     win.webContents.on('console-message', (_event, level, message) => {
@@ -238,10 +228,30 @@ class WindowManager {
       return;
     }
 
-    if (this.overlayHighlightState) {
-      this.borderOverlayWindow.webContents.send('sally:overlay-highlight', this.overlayHighlightState);
+    this.syncBorderOverlayInteractivity();
+
+    const effectiveOverlayState = this.getEffectiveOverlayState();
+    if (effectiveOverlayState) {
+      this.borderOverlayWindow.webContents.send('sally:overlay-highlight', effectiveOverlayState);
     } else {
       this.borderOverlayWindow.webContents.send('sally:overlay-clear', undefined);
+    }
+  }
+
+  private getEffectiveOverlayState(): OverlayHighlightPayload | null {
+    return this.waitingOverlayState || this.overlayHighlightState;
+  }
+
+  private syncBorderOverlayInteractivity(): void {
+    if (!this.borderOverlayWindow || this.borderOverlayWindow.isDestroyed()) {
+      return;
+    }
+
+    const isWaitingOverlay = this.getEffectiveOverlayState()?.mode === 'waiting';
+    this.borderOverlayWindow.setIgnoreMouseEvents(!isWaitingOverlay);
+
+    if (process.platform !== 'darwin') {
+      this.borderOverlayWindow.setFocusable(isWaitingOverlay);
     }
   }
 
@@ -259,7 +269,7 @@ class WindowManager {
       skipTaskbar: true,
       resizable: false,
       hasShadow: false,
-      focusable: false,
+      focusable: true,
       roundedCorners: false,
       backgroundColor: '#00000000',
       show: false,
@@ -328,7 +338,9 @@ class WindowManager {
     if (this.borderOverlayWindow && !this.borderOverlayWindow.isDestroyed()) {
       this.overlayHighlightState = null;
       this.pushOverlayHighlightState();
-      this.borderOverlayWindow.hide();
+      if (!this.waitingOverlayState) {
+        this.borderOverlayWindow.hide();
+      }
     }
   }
 
@@ -365,6 +377,31 @@ class WindowManager {
     return this.overlayHighlightState?.mode === 'target';
   }
 
+  showWaitingOverlay(message = WAITING_OVERLAY_MESSAGE, actionLabel = WAITING_OVERLAY_ACTION): void {
+    const bounds = this.getBorderOverlayBounds();
+    this.ensureBorderOverlayWindow(bounds);
+    this.waitingOverlayState = {
+      mode: 'waiting',
+      message,
+      actionLabel,
+    };
+    this.borderOverlayWindow?.show();
+    this.pushOverlayHighlightState();
+    this.sallyBarWindow?.moveTop();
+  }
+
+  hideWaitingOverlay(): void {
+    this.waitingOverlayState = null;
+    if (!this.borderOverlayWindow || this.borderOverlayWindow.isDestroyed()) {
+      return;
+    }
+
+    this.pushOverlayHighlightState();
+    if (!this.overlayHighlightState) {
+      this.borderOverlayWindow.hide();
+    }
+  }
+
   getSallyBarWindow(): BrowserWindow | null {
     return this.sallyBarWindow;
   }
@@ -390,6 +427,7 @@ class WindowManager {
     this.sallyBarWindow = null;
     this.borderOverlayWindow = null;
     this.overlayHighlightState = null;
+    this.waitingOverlayState = null;
   }
 }
 

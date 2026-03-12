@@ -65,6 +65,7 @@ interface PendingRiskyAction {
   action: GeminiAction;
   prompt: string;
   descriptor: string;
+  autoListenAttempts: number;
 }
 
 const DESCRIBE_COMMANDS = [
@@ -326,6 +327,10 @@ const GENERIC_CLARIFICATION_RESPONSE = 'What would you like me to do?';
 const AFFIRMATIVE_CONFIRMATION_PATTERN = /\b(yes|yeah|yep|sure|go ahead|confirm|do it|send it|submit it|continue|proceed|okay)\b/i;
 const NEGATIVE_CONFIRMATION_PATTERN = /\b(no|nope|stop|cancel that|don't|do not|not now|skip|hold off)\b/i;
 const RISKY_ACTION_PATTERN = /\b(send|submit|purchase|buy|checkout|place order|delete|remove|discard|publish|post|log out|logout|sign out)\b/i;
+const SAFE_DRAFT_ACTION_PATTERN = /\b(compose|new email|new message|draft|reply|reply all|forward)\b/i;
+const EMAIL_DRAFT_STEP_PATTERN = /\b(draft|compose|write|email)\b/i;
+const AUTO_CONFIRMATION_MAX_DURATION_MS = 4000;
+const AUTO_CONFIRMATION_TRAILING_SILENCE_MS = 700;
 const COMPLEX_BROWSER_ACTION_PATTERN = /\b(open|go to|navigate to|visit|take me to|bring me to|switch to|search|find|look up|research|draft|compose|email|write|remember|use|compare|figure out|look for)\b/gi;
 const COMPLEX_BROWSER_SEQUENCE_PATTERN = /\b(in one tab|another tab|other tab|new tab|switch to|then|and then|after that|using those facts|using that|remember the key facts|remember those facts|before sending|before send)\b/gi;
 const COMPLEX_BROWSER_DESTINATION_PATTERN = /\b(gmail|linkedin|google docs|google drive|google calendar|youtube|slack|github|notion|amazon|reddit|canva|calendar|drive|docs|website|official website|company website|site|email|tab)\b/gi;
@@ -733,12 +738,25 @@ class SessionManager {
     const recipientEmail = this.getRememberedFactValue(context, 'Recipient email') || '';
     const subject = this.buildOutreachDraftSubject(context);
     const body = this.buildOutreachDraftBody(context);
+    return this.buildGmailComposeUrl(recipientEmail, { subject, body });
+  }
+
+  private buildGmailComposeUrl(
+    recipientEmail?: string | null,
+    options: { subject?: string | null; body?: string | null } = {},
+  ): string {
     const composeUrl = new URL('https://mail.google.com/mail/u/0/');
     composeUrl.searchParams.set('fs', '1');
     composeUrl.searchParams.set('tf', 'cm');
-    composeUrl.searchParams.set('to', recipientEmail);
-    composeUrl.searchParams.set('su', subject);
-    composeUrl.searchParams.set('body', body);
+    if (recipientEmail?.trim()) {
+      composeUrl.searchParams.set('to', recipientEmail.trim());
+    }
+    if (options.subject?.trim()) {
+      composeUrl.searchParams.set('su', options.subject.trim());
+    }
+    if (options.body?.trim()) {
+      composeUrl.searchParams.set('body', options.body);
+    }
     return composeUrl.toString();
   }
 
@@ -829,19 +847,13 @@ class SessionManager {
         descriptor: 'send this email',
       };
 
-    this.pendingRiskyAction = {
-      action: { type: 'click', selector: 'Send' },
-      prompt: riskyAction.prompt,
-      descriptor: riskyAction.descriptor,
-    };
-    context.status = 'awaiting_confirmation';
-    this.persistTaskMemory(context);
-    this.broadcastChat('assistant', riskyAction.prompt);
-    this.setState('awaiting_response');
-    await ttsService.speakImmediate(riskyAction.prompt);
-    if (this.isRunCurrent(runId)) {
-      this.setState('awaiting_response');
-    }
+    await this.promptPendingRiskyAction(
+      { type: 'click', selector: 'Send' },
+      riskyAction.prompt,
+      riskyAction.descriptor,
+      runId,
+      context,
+    );
     return true;
   }
 
@@ -1034,30 +1046,25 @@ class SessionManager {
       }
     }
 
-    if ((/\bgmail\b/i.test(activeSubtask) || (recipientEmail && /\bdraft\b/i.test(activeSubtask))) && gmailTab && snapshot.activeTabId !== gmailTab.id) {
+    if ((/\bgmail\b/i.test(activeSubtask) || (recipientEmail && EMAIL_DRAFT_STEP_PATTERN.test(activeSubtask))) && gmailTab && snapshot.activeTabId !== gmailTab.id) {
       return {
         narration: 'I already have Gmail open, so I’ll switch back to that tab.',
         action: { type: 'switch_tab', tabId: gmailTab.id },
       };
     }
 
-    if (recipientEmail && /\bdraft\b/i.test(activeSubtask) && activeUrl.includes('mail.google.com')) {
+    if (recipientEmail && EMAIL_DRAFT_STEP_PATTERN.test(activeSubtask) && activeUrl.includes('mail.google.com')) {
       const draft = await browserService.inspectGmailDraft();
-      const subject = this.buildOutreachDraftSubject(context);
-      const body = this.buildOutreachDraftBody(context);
+      const canPrefillOutreach = Boolean(company) && this.isResearchToEmailWorkflow(context);
+      const subject = canPrefillOutreach ? this.buildOutreachDraftSubject(context) : null;
+      const body = canPrefillOutreach ? this.buildOutreachDraftBody(context) : null;
       const normalizedBody = this.normalizeLooseText(draft?.bodyText || '');
       const normalizedCompany = this.normalizeLooseText(company || '');
 
       if (!draft?.composeOpen) {
-        const composeUrl = new URL('https://mail.google.com/mail/u/0/');
-        composeUrl.searchParams.set('fs', '1');
-        composeUrl.searchParams.set('tf', 'cm');
-        composeUrl.searchParams.set('to', recipientEmail);
-        composeUrl.searchParams.set('su', subject);
-        composeUrl.searchParams.set('body', body);
         return {
-          narration: "I'll open a prefilled Gmail draft.",
-          action: { type: 'navigate', url: composeUrl.toString() },
+          narration: canPrefillOutreach ? "I'll open a prefilled Gmail draft." : "I'll open Gmail compose and address the email.",
+          action: { type: 'navigate', url: this.buildGmailComposeUrl(recipientEmail, { subject, body }) },
         };
       }
 
@@ -1068,21 +1075,21 @@ class SessionManager {
         };
       }
 
-      if (!(draft.subject || '').trim()) {
+      if (canPrefillOutreach && !(draft.subject || '').trim() && subject) {
         return {
           narration: "I'll add a subject line.",
           action: { type: 'fill', selector: 'Subject', value: subject },
         };
       }
 
-      if (normalizedBody.length < 60 || (normalizedCompany && !normalizedBody.includes(normalizedCompany))) {
+      if (canPrefillOutreach && body && (normalizedBody.length < 60 || (normalizedCompany && !normalizedBody.includes(normalizedCompany)))) {
         return {
           narration: "I'll draft the outreach email using the facts I collected.",
           action: { type: 'fill', selector: 'Message Body', value: body },
         };
       }
 
-      if (draft.sendVisible) {
+      if (canPrefillOutreach && draft.sendVisible) {
         return {
           narration: "The draft is ready. I'll pause before sending it.",
           action: { type: 'click', selector: 'Send' },
@@ -1327,6 +1334,9 @@ class SessionManager {
   }
 
   private clearPendingRiskyAction(): void {
+    if (this.pendingRiskyAction) {
+      windowManager.broadcastToAll('sally:auto-confirmation-stop', undefined);
+    }
     this.pendingRiskyAction = null;
   }
 
@@ -1695,20 +1705,36 @@ class SessionManager {
     return score;
   }
 
-  private findActionTargetElement(action: GeminiAction, snapshot: BrowserSnapshot): PageContextElement | null {
+  private findActionTargetMatch(
+    action: GeminiAction,
+    snapshot: BrowserSnapshot,
+  ): { element: PageContextElement | null; score: number } {
     const elements = snapshot.pageContext.interactiveElements || [];
     if (elements.length === 0) {
-      return null;
+      return { element: null, score: -1 };
     }
 
     if (action.targetId) {
-      return elements.find((element) => element.targetId === action.targetId) || null;
+      const exactMatch = elements.find((element) => element.targetId === action.targetId) || null;
+      return {
+        element: exactMatch,
+        score: exactMatch ? 240 : -1,
+      };
     }
 
-    return elements
+    const match = elements
       .map((element) => ({ element, score: this.scoreActionTargetMatch(action, element) }))
       .filter((entry) => entry.score >= 80)
-      .sort((left, right) => right.score - left.score || left.element.index - right.element.index)[0]?.element || null;
+      .sort((left, right) => right.score - left.score || left.element.index - right.element.index)[0] || null;
+
+    return {
+      element: match?.element || null,
+      score: match?.score ?? -1,
+    };
+  }
+
+  private findActionTargetElement(action: GeminiAction, snapshot: BrowserSnapshot): PageContextElement | null {
+    return this.findActionTargetMatch(action, snapshot).element;
   }
 
   private findActionDescriptor(action: GeminiAction, snapshot: BrowserSnapshot): string {
@@ -1797,15 +1823,25 @@ class SessionManager {
       return null;
     }
 
-    const target = this.findActionTargetElement(action, snapshot);
+    const match = this.findActionTargetMatch(action, snapshot);
+    const target = match.element;
     const descriptor = target?.label || target?.text || this.findActionDescriptor(action, snapshot);
+    if (this.isSafeDraftSetupAction(action, descriptor)) {
+      return null;
+    }
+
     const riskyTexts = [
       action.selector,
       action.value,
-      descriptor,
-      target?.label,
-      target?.text,
     ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim()));
+
+    if (action.targetId || match.score >= 140) {
+      riskyTexts.push(...[
+        descriptor,
+        target?.label,
+        target?.text,
+      ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())));
+    }
 
     if (!riskyTexts.some((value) => RISKY_ACTION_PATTERN.test(value))) {
       return null;
@@ -1813,6 +1849,90 @@ class SessionManager {
 
     const prompt = `I am ready to ${descriptor}. Please say yes to confirm or no to cancel that step.`;
     return { prompt, descriptor };
+  }
+
+  private isSafeDraftSetupAction(action: GeminiAction, descriptor: string | null): boolean {
+    if (!['click', 'press', 'select'].includes(action.type)) {
+      return false;
+    }
+
+    const texts = [
+      action.selector,
+      action.value,
+      descriptor,
+    ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim()));
+
+    return texts.some((value) => SAFE_DRAFT_ACTION_PATTERN.test(value))
+      && !texts.some((value) => RISKY_ACTION_PATTERN.test(value));
+  }
+
+  private async promptPendingRiskyAction(
+    action: GeminiAction,
+    prompt: string,
+    descriptor: string,
+    runId: number,
+    context?: ComplexTaskContext | null,
+  ): Promise<void> {
+    this.pendingRiskyAction = {
+      action,
+      prompt,
+      descriptor,
+      autoListenAttempts: 0,
+    };
+
+    if (context) {
+      context.status = 'awaiting_confirmation';
+      this.persistTaskMemory(context);
+    } else if (this.currentTask) {
+      this.currentTask.status = 'awaiting_confirmation';
+    }
+
+    this.broadcastChat('assistant', prompt);
+    this.setState('awaiting_response');
+    await ttsService.speakImmediate(prompt);
+    if (!this.isRunCurrent(runId) || !this.pendingRiskyAction) {
+      return;
+    }
+
+    this.setState('awaiting_response');
+    this.startAutoConfirmationListen();
+  }
+
+  private startAutoConfirmationListen(): void {
+    if (!this.pendingRiskyAction) {
+      return;
+    }
+
+    windowManager.broadcastToAll('sally:auto-confirmation-listen', {
+      maxDurationMs: AUTO_CONFIRMATION_MAX_DURATION_MS,
+      trailingSilenceMs: AUTO_CONFIRMATION_TRAILING_SILENCE_MS,
+    });
+  }
+
+  private async handlePendingRiskyActionMiss(runId: number): Promise<void> {
+    if (!this.pendingRiskyAction || !this.currentTask) {
+      return;
+    }
+
+    if (this.pendingRiskyAction.autoListenAttempts < 1) {
+      this.pendingRiskyAction.autoListenAttempts += 1;
+      this.currentTask.status = 'awaiting_confirmation';
+      this.broadcastChat('assistant', 'Please say yes to confirm or no to cancel.');
+      this.setState('awaiting_response');
+      await ttsService.speakImmediate('Please say yes to confirm or no to cancel.');
+      if (!this.isRunCurrent(runId) || !this.pendingRiskyAction) {
+        return;
+      }
+
+      this.setState('awaiting_response');
+      this.startAutoConfirmationListen();
+      return;
+    }
+
+    this.currentTask.status = 'awaiting_confirmation';
+    if (this.isRunCurrent(runId)) {
+      this.setState('awaiting_response');
+    }
   }
 
   private async refreshTaskPlan(
@@ -1916,14 +2036,7 @@ class SessionManager {
       return true;
     }
 
-    if (this.isRunCurrent(runId)) {
-      this.setState('awaiting_response');
-    }
-    this.broadcastChat('assistant', this.pendingRiskyAction.prompt);
-    await ttsService.speakImmediate(this.pendingRiskyAction.prompt);
-    if (this.isRunCurrent(runId)) {
-      this.setState('awaiting_response');
-    }
+    await this.handlePendingRiskyActionMiss(runId);
     return true;
   }
 
@@ -2577,7 +2690,7 @@ class SessionManager {
     await this.executeTaskForRun(text, runId, 'typed');
   }
 
-  async handleSilence(details?: { durationMs?: number; peakLevel?: number; averageLevel?: number }): Promise<void> {
+  async handleSilence(details?: { durationMs?: number; peakLevel?: number; averageLevel?: number; mode?: 'default' | 'confirmation' }): Promise<void> {
     const runId = this.startRun();
     this.setState('processing');
 
@@ -2585,9 +2698,15 @@ class SessionManager {
       durationMs: details?.durationMs ?? 0,
       peakLevel: details?.peakLevel ?? 0,
       averageLevel: details?.averageLevel ?? 0,
+      mode: details?.mode ?? 'default',
     });
 
     if (!this.isRunCurrent(runId)) {
+      return;
+    }
+
+    if (details?.mode === 'confirmation' && this.pendingRiskyAction && this.currentTask) {
+      await this.handlePendingRiskyActionMiss(runId);
       return;
     }
 
@@ -3324,20 +3443,13 @@ class SessionManager {
     const riskyPrompt = this.buildRiskyActionPrompt(autoSuggestion.action, snapshot);
     if (riskyPrompt) {
       await this.showActionTargetHighlight(autoSuggestion.action, snapshot);
-      this.pendingRiskyAction = {
-        action: autoSuggestion.action,
-        prompt: riskyPrompt.prompt,
-        descriptor: riskyPrompt.descriptor,
-      };
-      if (this.currentTask) {
-        this.currentTask.status = 'awaiting_confirmation';
-      }
-      this.broadcastChat('assistant', riskyPrompt.prompt);
-      this.setState('awaiting_response');
-      await ttsService.speakImmediate(riskyPrompt.prompt);
-      if (this.isRunCurrent(runId)) {
-        this.setState('awaiting_response');
-      }
+      await this.promptPendingRiskyAction(
+        autoSuggestion.action,
+        riskyPrompt.prompt,
+        riskyPrompt.descriptor,
+        runId,
+        this.currentTask,
+      );
       return true;
     }
 
@@ -3847,19 +3959,13 @@ class SessionManager {
         const riskyAction = this.buildRiskyActionPrompt(actionToExecute, snapshot);
         if (riskyAction) {
           await this.showActionTargetHighlight(actionToExecute, snapshot);
-          this.pendingRiskyAction = {
-            action: actionToExecute,
-            prompt: riskyAction.prompt,
-            descriptor: riskyAction.descriptor,
-          };
-          context.status = 'awaiting_confirmation';
-          this.persistTaskMemory(context);
-          this.broadcastChat('assistant', riskyAction.prompt);
-          this.setState('awaiting_response');
-          await ttsService.speakImmediate(riskyAction.prompt);
-          if (this.isRunCurrent(runId)) {
-            this.setState('awaiting_response');
-          }
+          await this.promptPendingRiskyAction(
+            actionToExecute,
+            riskyAction.prompt,
+            riskyAction.descriptor,
+            runId,
+            context,
+          );
           return;
         }
 
@@ -4008,16 +4114,14 @@ class SessionManager {
   setState(state: SallyState): void {
     this.state = state;
     if (state === 'idle') {
+      windowManager.hideWaitingOverlay();
       windowManager.hideBorderOverlay();
     } else {
       windowManager.showSallyBar();
       if (state === 'awaiting_response') {
-        if (windowManager.hasActiveTargetHighlight()) {
-          windowManager.showBorderOverlay();
-        } else {
-          windowManager.hideBorderOverlay();
-        }
+        windowManager.showWaitingOverlay();
       } else {
+        windowManager.hideWaitingOverlay();
         windowManager.showBorderOverlay();
       }
     }

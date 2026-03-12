@@ -348,6 +348,7 @@ Verifies: Text-based instruction path
 
 - Sally Bar appears at the top of the screen (draggable floating pill)
 - Blue border overlay appears when Sally is actively working
+- When Sally is waiting for a reply, the browser blurs fully and shows a centered `Agent is waiting for your reply` message with an `End Agent` cancel button
 - Every action is narrated aloud via TTS
 - The Sally browser keeps its own cookies and sessions across restarts
 - Screen-only commands do not open the browser

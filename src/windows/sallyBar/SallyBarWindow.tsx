@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ipc } from '../../lib/ipc';
 import WaveformView from './components/WaveformView';
-import type { SallyBarLayout, SallyState } from '../../../shared/types';
+import type { AutoConfirmationListenPayload, SallyBarLayout, SallyState } from '../../../shared/types';
 import logoSrc from '../../../assets/branding/sally-logo.png';
 
 const SendIcon = () => (
@@ -67,6 +67,9 @@ const MIN_LIVE_PREVIEW_DURATION_MS = 1500;
 const SILENCE_GUARD_MIN_DURATION_MS = 500;
 const SILENCE_GUARD_MAX_PEAK_LEVEL = 0.015;
 const SILENCE_GUARD_MAX_AVERAGE_LEVEL = 0.006;
+const CONFIRMATION_ACTIVE_LEVEL = 0.018;
+const DEFAULT_CONFIRMATION_MAX_DURATION_MS = 4000;
+const DEFAULT_CONFIRMATION_TRAILING_SILENCE_MS = 700;
 const AUDIO_BITS_PER_SECOND = 128000;
 const VOICE_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
   echoCancellation: { ideal: true },
@@ -103,6 +106,14 @@ export default function SallyBarWindow() {
   const inputRef = useRef<HTMLInputElement>(null);
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const isMicMutedRef = useRef(false);
+  const recordingModeRef = useRef<'hotkey' | 'confirmation' | null>(null);
+  const currentSignalLevelRef = useRef(0);
+  const confirmationMaxDurationTimeoutRef = useRef<number | null>(null);
+  const confirmationTrailingSilenceMsRef = useRef(DEFAULT_CONFIRMATION_TRAILING_SILENCE_MS);
+  const confirmationSpeechDetectedRef = useRef(false);
+  const confirmationSilenceStartedAtRef = useRef<number | null>(null);
+  const confirmationStopRequestedRef = useRef(false);
+  const stopRecordingRef = useRef<(() => Promise<void>) | null>(null);
 
   const syncLayout = useCallback(async (layout: SallyBarLayout) => {
     await ipc.invoke('window:set-pill-layout', { layout });
@@ -112,7 +123,19 @@ export default function SallyBarWindow() {
     peakSignalLevelRef.current = 0;
     signalLevelTotalRef.current = 0;
     signalLevelSamplesRef.current = 0;
+    currentSignalLevelRef.current = 0;
     setAudioLevel(0);
+  }, []);
+
+  const clearConfirmationCaptureState = useCallback(() => {
+    if (confirmationMaxDurationTimeoutRef.current !== null) {
+      window.clearTimeout(confirmationMaxDurationTimeoutRef.current);
+      confirmationMaxDurationTimeoutRef.current = null;
+    }
+    confirmationTrailingSilenceMsRef.current = DEFAULT_CONFIRMATION_TRAILING_SILENCE_MS;
+    confirmationSpeechDetectedRef.current = false;
+    confirmationSilenceStartedAtRef.current = null;
+    confirmationStopRequestedRef.current = false;
   }, []);
 
   const getSignalLevels = useCallback(() => {
@@ -230,10 +253,18 @@ export default function SallyBarWindow() {
     const unsubStart = window.electron.on('hotkey:start-recording', () => startRecording());
     const unsubStop = window.electron.on('hotkey:stop-recording', () => stopRecording());
     const unsubCancel = window.electron.on('hotkey:cancel-recording', () => cancelRecording());
+    const unsubConfirmationListen = ipc.subscribe('sally:auto-confirmation-listen', (data) => {
+      void startRecording('confirmation', data);
+    });
+    const unsubConfirmationStop = ipc.subscribe('sally:auto-confirmation-stop', () => {
+      cancelRecording({ silent: true, confirmationOnly: true });
+    });
     return () => {
       unsubStart();
       unsubStop();
       unsubCancel();
+      unsubConfirmationListen();
+      unsubConfirmationStop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -393,6 +424,8 @@ export default function SallyBarWindow() {
   const cleanupRecordingUi = useCallback(() => {
     setIsRecording(false);
     setAudioLevel(0);
+    recordingModeRef.current = null;
+    clearConfirmationCaptureState();
 
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
@@ -401,7 +434,7 @@ export default function SallyBarWindow() {
 
     analyserRef.current?.disconnect();
     analyserRef.current = null;
-  }, []);
+  }, [clearConfirmationCaptureState]);
 
   const releaseRecordingStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -479,10 +512,15 @@ export default function SallyBarWindow() {
     }, LIVE_PREVIEW_INTERVAL_MS);
   }, [requestLiveTranscriptPreview, stopLiveTranscriptPreview]);
 
-  const startRecording = useCallback(async () => {
+  const startRecording = useCallback(async (
+    mode: 'hotkey' | 'confirmation' = 'hotkey',
+    confirmationOptions?: AutoConfirmationListenPayload,
+  ) => {
     if (isMicMutedRef.current || isRecording) return;
 
     try {
+      recordingModeRef.current = mode;
+      clearConfirmationCaptureState();
       setIsComposerOpen(false);
       setLiveTranscript('');
 
@@ -506,10 +544,27 @@ export default function SallyBarWindow() {
           sumSquares += centered * centered;
         }
         const rms = Math.sqrt(sumSquares / dataArray.length);
+        currentSignalLevelRef.current = rms;
         peakSignalLevelRef.current = Math.max(peakSignalLevelRef.current, rms);
         signalLevelTotalRef.current += rms;
         signalLevelSamplesRef.current += 1;
         setAudioLevel(Math.min(rms * 12, 1));
+
+        if (recordingModeRef.current === 'confirmation' && !confirmationStopRequestedRef.current) {
+          const now = Date.now();
+          if (rms >= CONFIRMATION_ACTIVE_LEVEL) {
+            confirmationSpeechDetectedRef.current = true;
+            confirmationSilenceStartedAtRef.current = null;
+          } else if (confirmationSpeechDetectedRef.current) {
+            confirmationSilenceStartedAtRef.current ??= now;
+            if (now - confirmationSilenceStartedAtRef.current >= confirmationTrailingSilenceMsRef.current) {
+              confirmationStopRequestedRef.current = true;
+              void stopRecordingRef.current?.();
+              return;
+            }
+          }
+        }
+
         animFrameRef.current = requestAnimationFrame(updateLevel);
       };
       updateLevel();
@@ -536,6 +591,24 @@ export default function SallyBarWindow() {
       startLiveTranscriptPreview();
       setIsRecording(true);
       playStartChime();
+
+      if (mode === 'confirmation') {
+        confirmationTrailingSilenceMsRef.current = Math.max(
+          confirmationOptions?.trailingSilenceMs ?? DEFAULT_CONFIRMATION_TRAILING_SILENCE_MS,
+          300,
+        );
+        confirmationMaxDurationTimeoutRef.current = window.setTimeout(() => {
+          if (
+            recordingModeRef.current === 'confirmation'
+            && mediaRecorderRef.current
+            && mediaRecorderRef.current.state !== 'inactive'
+            && !confirmationStopRequestedRef.current
+          ) {
+            confirmationStopRequestedRef.current = true;
+            void stopRecordingRef.current?.();
+          }
+        }, Math.max(confirmationOptions?.maxDurationMs ?? DEFAULT_CONFIRMATION_MAX_DURATION_MS, 1500));
+      }
     } catch (error) {
       console.error('Failed to start recording:', error);
       cleanupRecordingUi();
@@ -543,9 +616,11 @@ export default function SallyBarWindow() {
       stopLiveTranscriptPreview();
       releaseRecordingStream();
     }
-  }, [cleanupRecordingUi, isRecording, playStartChime, releaseRecordingStream, resetSignalLevels, startLiveTranscriptPreview, stopLiveTranscriptPreview]);
+  }, [cleanupRecordingUi, clearConfirmationCaptureState, isRecording, playStartChime, releaseRecordingStream, resetSignalLevels, startLiveTranscriptPreview, stopLiveTranscriptPreview]);
 
   const stopRecording = useCallback(async () => {
+    const recordingMode = recordingModeRef.current ?? 'hotkey';
+    confirmationStopRequestedRef.current = true;
     cleanupRecordingUi();
     stopLiveTranscriptPreview();
     const recorder = mediaRecorderRef.current;
@@ -568,6 +643,7 @@ export default function SallyBarWindow() {
             durationMs,
             peakLevel,
             averageLevel,
+            mode: recordingMode === 'confirmation' ? 'confirmation' : 'default',
           });
           recordingStartedAtRef.current = 0;
           resetSignalLevels();
@@ -591,6 +667,7 @@ export default function SallyBarWindow() {
               durationMs,
               peakLevel,
               averageLevel,
+              mode: recordingMode === 'confirmation' ? 'confirmation' : 'default',
             });
           }
           recordingStartedAtRef.current = 0;
@@ -617,8 +694,18 @@ export default function SallyBarWindow() {
     });
   }, [cleanupRecordingUi, getSignalLevels, isSilentRecording, playSendChime, releaseRecordingStream, resetSignalLevels, stopLiveTranscriptPreview]);
 
-  const cancelRecording = useCallback(() => {
-    playCancelChime();
+  useEffect(() => {
+    stopRecordingRef.current = stopRecording;
+  }, [stopRecording]);
+
+  const cancelRecording = useCallback((options?: { silent?: boolean; confirmationOnly?: boolean }) => {
+    if (options?.confirmationOnly && recordingModeRef.current !== 'confirmation') {
+      return;
+    }
+
+    if (!options?.silent) {
+      playCancelChime();
+    }
     const recorder = mediaRecorderRef.current;
     cleanupRecordingUi();
     stopLiveTranscriptPreview();

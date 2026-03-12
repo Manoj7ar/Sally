@@ -3,6 +3,7 @@
 export type SallyProvider = 'gemini';
 export type SallyState = 'idle' | 'listening' | 'processing' | 'acting' | 'speaking' | 'awaiting_response';
 export type SallyBarLayout = 'idle' | 'compact' | 'composer' | 'transcript';
+export type SilenceMode = 'default' | 'confirmation';
 
 export interface AutomationStep {
   action: string;
@@ -24,11 +25,26 @@ export interface OverlayHighlightRect {
   height: number;
 }
 
-export interface OverlayHighlightPayload {
-  mode: 'border' | 'target';
+export interface OverlayBorderPayload {
+  mode: 'border';
+}
+
+export interface OverlayTargetPayload {
+  mode: 'target';
   label?: string | null;
   rect?: OverlayHighlightRect | null;
 }
+
+export interface OverlayWaitingPayload {
+  mode: 'waiting';
+  message: string;
+  actionLabel?: string | null;
+}
+
+export type OverlayHighlightPayload =
+  | OverlayBorderPayload
+  | OverlayTargetPayload
+  | OverlayWaitingPayload;
 
 export interface SallyConfig {
   provider: SallyProvider;
@@ -43,6 +59,11 @@ export interface SallyConfig {
 export interface AudioDeviceInfo {
   deviceId: string;
   label: string;
+}
+
+export interface AutoConfirmationListenPayload {
+  maxDurationMs: number;
+  trailingSilenceMs: number;
 }
 
 // IPC Channel definitions
@@ -68,7 +89,7 @@ export interface IpcChannels {
   // Voice flow
   'sally:transcribe': { request: { audioBase64: string; mimeType: string; durationMs?: number }; response: string; broadcast: never };
   'sally:preview-transcription': { request: { audioBase64: string; mimeType: string; durationMs?: number }; response: string; broadcast: never };
-  'sally:handle-silence': { request: { durationMs?: number; peakLevel?: number; averageLevel?: number }; response: void; broadcast: never };
+  'sally:handle-silence': { request: { durationMs?: number; peakLevel?: number; averageLevel?: number; mode?: SilenceMode }; response: void; broadcast: never };
   'sally:send-instruction': { request: string; response: void; broadcast: never };
   'sally:cancel': { request: void; response: void; broadcast: never };
   'sally:get-mic-muted': { request: void; response: boolean; broadcast: never };
@@ -89,6 +110,8 @@ export interface IpcChannels {
   'sally:chat': { request: never; response: never; broadcast: ChatMessage };
   'sally:overlay-highlight': { request: never; response: never; broadcast: OverlayHighlightPayload };
   'sally:overlay-clear': { request: never; response: never; broadcast: void };
+  'sally:auto-confirmation-listen': { request: never; response: never; broadcast: AutoConfirmationListenPayload };
+  'sally:auto-confirmation-stop': { request: never; response: never; broadcast: void };
   'sally:tts-audio': { request: never; response: never; broadcast: { audioBase64: string; id: string } };
   'sally:tts-stop': { request: never; response: never; broadcast: void };
   'sally:tts-playback-error': { request: { id: string; message: string }; response: never; broadcast: never };

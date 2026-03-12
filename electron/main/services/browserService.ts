@@ -190,6 +190,121 @@ class BrowserService {
     })()`, true) as Promise<GmailDraftInspection>;
   }
 
+  private isGmailComposeAction(action: GeminiAction, currentUrl: string): boolean {
+    if (action.type !== 'click' || !currentUrl.includes('mail.google.com')) {
+      return false;
+    }
+
+    const texts = [action.selector, action.value]
+      .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+      .join(' ');
+    return /\b(compose|new email|new message)\b/i.test(texts);
+  }
+
+  private async inspectGmailDraftWithRetry(attempts = 4, intervalMs = 250): Promise<GmailDraftInspection | null> {
+    let lastDraft: GmailDraftInspection | null = null;
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      lastDraft = await this.inspectGmailDraft();
+      if (lastDraft?.composeOpen) {
+        return lastDraft;
+      }
+
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    }
+
+    return lastDraft;
+  }
+
+  private async tryGmailComposeButtonFallback(window: BrowserWindow): Promise<boolean> {
+    return window.webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const isVisible = (element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (Number(style.opacity || '1') <= 0.05) return false;
+        return rect.width >= 4 && rect.height >= 4 && rect.bottom >= 0 && rect.right >= 0;
+      };
+
+      const candidates = Array.from(document.querySelectorAll('div[role="button"], button, [gh="cm"], [aria-label], [data-tooltip]'))
+        .filter((element) => element instanceof HTMLElement)
+        .filter((element) => isVisible(element))
+        .map((element) => {
+          const label = normalize(
+            element.getAttribute('aria-label')
+            || element.getAttribute('data-tooltip')
+            || element.getAttribute('title')
+            || element.textContent
+          );
+          const gh = normalize(element.getAttribute('gh'));
+          const score = (
+            (gh === 'cm' ? 220 : 0)
+            + (label === 'compose' ? 180 : 0)
+            + (label.startsWith('compose') ? 120 : 0)
+            + (label.includes('new message') ? 110 : 0)
+            + (element.getAttribute('role') === 'button' ? 30 : 0)
+            + (element.tagName.toLowerCase() === 'button' ? 20 : 0)
+          );
+          return { element, score };
+        })
+        .filter((entry) => entry.score > 0)
+        .sort((left, right) => right.score - left.score);
+
+      const target = candidates[0]?.element;
+      if (!(target instanceof HTMLElement)) {
+        return false;
+      }
+
+      target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      target.focus();
+      const rect = target.getBoundingClientRect();
+      const eventInit = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+        button: 0,
+      };
+
+      target.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+      target.dispatchEvent(new MouseEvent('mousedown', eventInit));
+      target.dispatchEvent(new PointerEvent('pointerup', eventInit));
+      target.dispatchEvent(new MouseEvent('mouseup', eventInit));
+      target.click();
+      return true;
+    })()`, true) as Promise<boolean>;
+  }
+
+  private async verifyOrRecoverDomClick(window: BrowserWindow, action: GeminiAction, domResult: { ok: boolean; message: string }): Promise<{ ok: boolean; message: string }> {
+    const currentUrl = window.webContents.getURL();
+    if (!this.isGmailComposeAction(action, currentUrl)) {
+      return domResult;
+    }
+
+    const initialDraftState = await this.inspectGmailDraftWithRetry();
+    if (initialDraftState?.composeOpen) {
+      return domResult.ok
+        ? domResult
+        : { ok: true, message: 'Opened Gmail compose' };
+    }
+
+    const fallbackTriggered = await this.tryGmailComposeButtonFallback(window);
+    if (fallbackTriggered) {
+      const recoveredDraftState = await this.inspectGmailDraftWithRetry();
+      if (recoveredDraftState?.composeOpen) {
+        return { ok: true, message: 'Opened Gmail compose' };
+      }
+    }
+
+    return { ok: false, message: 'gmail_compose_not_opened' };
+  }
+
   async executeAction(action: GeminiAction): Promise<string> {
     const window = await this.launch();
     const contents = window.webContents;
@@ -291,7 +406,10 @@ class BrowserService {
         case 'focus':
         case 'check':
         case 'uncheck': {
-          const result = await this.runDomAction(action);
+          const domResult = await this.runDomAction(action);
+          const result = action.type === 'click'
+            ? await this.verifyOrRecoverDomClick(window, action, domResult)
+            : domResult;
           const message = result.ok ? result.message : this.mapDomFailure(action, result.message);
           cloudLog(result.ok ? 'INFO' : 'WARNING', 'browser_action_iteration', {
             actionType: action.type,
@@ -731,6 +849,8 @@ class BrowserService {
         return action.selector ? `Could not select in "${action.selector}"` : 'Could not select that control';
       case 'option_not_found':
         return action.selector ? `Could not select in "${action.selector}"` : 'Could not find that option';
+      case 'gmail_compose_not_opened':
+        return 'Could not open Gmail compose';
       default:
         return `Action failed: ${message}`;
     }

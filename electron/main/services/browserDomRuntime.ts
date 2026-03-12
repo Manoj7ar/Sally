@@ -117,6 +117,45 @@ export function runDomTaskInPage(payload: {
     return role !== 'generic' || Boolean(descriptor.label || descriptor.text || descriptor.placeholder);
   };
 
+  const STRONG_INTERACTIVE_SELECTOR = [
+    'a[href]',
+    'button',
+    'input:not([type="hidden"])',
+    'textarea',
+    'select',
+    'summary',
+    'option',
+    '[contenteditable="true"]',
+    '[role="button"]',
+    '[role="link"]',
+    '[role="tab"]',
+    '[role="menuitem"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="switch"]',
+    '[role="combobox"]',
+    '[role="listbox"]',
+    '[role="option"]',
+  ].join(', ');
+
+  const getParentInteractiveCandidate = (element: HTMLElement): HTMLElement | null => {
+    let current: HTMLElement | null = element.parentElement;
+    let guard = 0;
+
+    while (current && guard < 40) {
+      if (current.matches(STRONG_INTERACTIVE_SELECTOR) && isVisible(current)) {
+        return current;
+      }
+
+      const root = current.getRootNode();
+      current = current.parentElement
+        || (root instanceof ShadowRoot && root.host instanceof HTMLElement ? root.host : null);
+      guard += 1;
+    }
+
+    return null;
+  };
+
   const isHeadingElement = (element: HTMLElement): boolean => (
     /^(H1|H2|H3)$/i.test(element.tagName) || normalizeLower(element.getAttribute('role')) === 'heading'
   );
@@ -251,7 +290,7 @@ export function runDomTaskInPage(payload: {
         const descriptor = getDescriptor(element);
         const role = inferRole(element);
 
-        if (visible && isInteractiveCandidate(element, role, descriptor)) {
+        if (visible && isInteractiveCandidate(element, role, descriptor) && !(role === 'generic' && getParentInteractiveCandidate(element))) {
           const localRect = element.getBoundingClientRect();
           const rect = {
             left: localRect.left + context.offsetX,
@@ -412,12 +451,37 @@ export function runDomTaskInPage(payload: {
     return null;
   };
 
-  const triggerClick = (element: HTMLElement): void => {
-    if (element instanceof HTMLAnchorElement) {
-      element.target = '_self';
+  const getClickTarget = (element: HTMLElement): HTMLElement => {
+    if (element.matches(STRONG_INTERACTIVE_SELECTOR)) {
+      return element;
     }
-    element.focus();
-    element.click();
+
+    return getParentInteractiveCandidate(element) || element;
+  };
+
+  const triggerClick = (element: HTMLElement): void => {
+    const clickTarget = getClickTarget(element);
+    if (clickTarget instanceof HTMLAnchorElement) {
+      clickTarget.target = '_self';
+    }
+
+    clickTarget.focus();
+    const rect = clickTarget.getBoundingClientRect();
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+      button: 0,
+    };
+
+    clickTarget.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+    clickTarget.dispatchEvent(new MouseEvent('mousedown', eventInit));
+    clickTarget.dispatchEvent(new PointerEvent('pointerup', eventInit));
+    clickTarget.dispatchEvent(new MouseEvent('mouseup', eventInit));
+    clickTarget.click();
   };
 
   const resolveTarget = (action: GeminiAction, entries: InteractiveEntry[]): InteractiveEntry | undefined => {
@@ -471,6 +535,21 @@ export function runDomTaskInPage(payload: {
         const tokens = desiredSelector.split(' ').filter(Boolean);
         const hits = tokens.filter((token) => value.includes(token)).length;
         if (hits > 0) score = Math.max(score, 35 + hits * 10);
+      }
+
+      if (action.type === 'click') {
+        if (entry.role === 'button') score += 40;
+        else if (entry.role === 'link') score += 30;
+        else if (['tab', 'menuitem', 'checkbox', 'radio', 'switch', 'combobox', 'option'].includes(entry.role)) score += 18;
+        else if (entry.role === 'generic') score -= 18;
+
+        if (entry.tagName === 'button') score += 14;
+        if (entry.tagName === 'a') score += 10;
+      }
+
+      const primaryText = normalizeLower(entry.label || entry.text || entry.placeholder);
+      if (desiredSelector && primaryText && primaryText.length > desiredSelector.length * 4 && !primaryText.startsWith(desiredSelector)) {
+        score -= 8;
       }
 
       if (desiredFramePath.length > 0 && arraysEqual(entry.framePath, desiredFramePath)) score += 20;
