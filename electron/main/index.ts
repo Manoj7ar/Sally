@@ -9,7 +9,10 @@ import { windowManager, setQuitting } from './windowManager.js';
 import { registerIpcHandlers } from './ipcHandlers.js';
 import { sessionManager } from './managers/sessionManager.js';
 import { browserService } from './services/browserService.js';
+import { cloudLogger } from './services/cloudLogger.js';
 import { hotkeyManager } from './hotkeyManager.js';
+
+let quitAfterFlush = false;
 
 // Prevent multiple instances
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -55,8 +58,21 @@ app.on('window-all-closed', () => {
   // Don't quit on window close (sally bar stays)
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   setQuitting(true);
+  if (quitAfterFlush) {
+    return;
+  }
+
+  quitAfterFlush = true;
+  event.preventDefault();
+  void cloudLogger.shutdown()
+    .catch((error) => {
+      console.error('[CloudLogger] Failed to flush logs during shutdown:', error);
+    })
+    .finally(() => {
+      app.quit();
+    });
 });
 
 app.on('will-quit', async () => {

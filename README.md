@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Built for the Gemini Live Agent Challenge | UI Navigator Track</strong><br/>
-  Powered by Gemini 2.5 Flash, Google Cloud Run, and the <code>@google/genai</code> SDK
+  Powered by Gemini 2.5 Flash, Google Cloud Run, optional Google Cloud Logging, and the <code>@google/genai</code> SDK
 </p>
 
 ---
@@ -68,6 +68,7 @@ graph TD
     A[Right Alt + Microphone] -->|push-to-talk| B[Audio Recorder]
     B -->|WebM audio| C[Gemini 2.5 Flash STT]
     C --> D{Command Router}
+    D --> MAIN[Electron Main Process]
 
     D -->|describe| E[Desktop Screenshot]
     D -->|screen question| E
@@ -86,8 +87,11 @@ graph TD
     CHECK -->|Yes| EXEC[Sally Browser: Execute DOM-first Action]
     EXEC --> SB
 
+    MAIN --> LOGQ[Batch Logger Queue]
+    LOGQ -->|POST /api/log| CR
     GEMINI -.->|Cloud Run backend| CR[Google Cloud Run]
     GEMINI -.->|direct fallback| SDK[google/genai SDK]
+    CR --> GCL[Google Cloud Logging]
 ```
 
 Want the full system walkthrough? See [docs/architecture.md](./docs/architecture.md) for the detailed architecture, data flow, and implementation notes.
@@ -97,6 +101,7 @@ Want the full system walkthrough? See [docs/architecture.md](./docs/architecture
 | Component | Service | Purpose |
 |-----------|---------|---------|
 | **Vision Backend** | Google Cloud Run | Hosts the Gemini screen interpretation proxy |
+| **Observability** | Google Cloud Logging | Optional structured agent activity logs for backend and desktop events |
 | **AI Model** | Gemini 2.5 Flash | Multimodal vision — understands screenshots and generates structured actions |
 | **SDK** | `@google/genai` | Official Google Gen AI SDK for Node.js |
 | **Build** | Cloud Build | Builds container images on deploy |
@@ -111,6 +116,11 @@ The Cloud Run backend receives a base64 PNG screenshot + user instruction + opti
 }
 ```
 
+Sally also has an optional structured logging path for hackathon demos:
+- Electron main batches compact activity events and forwards them to `POST /api/log`
+- the backend writes them to the `sally-agent-log` stream when `ENABLE_CLOUD_LOGGING=true`
+- when Cloud Logging is not enabled, both desktop and backend fall back to local console logging
+
 ## Features
 
 - **Gemini-powered screen understanding** — "What do I see?" uses Gemini 2.5 Flash multimodal vision
@@ -121,6 +131,7 @@ The Cloud Run backend receives a base64 PNG screenshot + user instruction + opti
 - **Structured page grounding** — Gemini sees both the live screenshot and visible page context such as buttons, fields, headings, dialogs, and messages
 - **Assistive browser commands** — "What can I do here?", "What buttons are here?", "Read the errors", and similar commands answer directly from the live page
 - **Multi-step task completion** — Handles complex tasks autonomously across multiple pages
+- **Optional Cloud Logging integration** — Backend and desktop activity can flow into Google Cloud Logging at deploy time without changing local behavior
 - **Floating assistant bar** — Minimal, non-intrusive UI with live state feedback
 - **Configurable settings** — Manage Gemini, Whisper fallback, backend URL, auto research, and audio from the settings window
 

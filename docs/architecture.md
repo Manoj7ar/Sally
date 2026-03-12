@@ -129,6 +129,7 @@ This is the core idea behind Sally: screenshot understanding plus direct UI cont
 | **Page Context Extractor** | Injected DOM scripts | Builds control inventory, headings, landmarks, dialogs, messages |
 | **Gemini Service** | `@google/genai` + backend HTTP | Multimodal planning and visual question answering |
 | **Cloud Run Backend** | Node.js + Express | Hosted Gemini proxy on Google Cloud |
+| **Cloud Logger** | Electron batching + Google Cloud Logging | Optional structured log pipeline for desktop and backend activity |
 | **Session Manager** | TypeScript | Main orchestration and state machine |
 | **TTS Service** | ElevenLabs API | Neural text-to-speech narration |
 | **Config Window** | React | Settings UI for keys, backend, audio, research toggle |
@@ -145,6 +146,7 @@ graph TD
     A[Right Alt + Microphone] -->|push-to-talk| B[Audio Recorder]
     B -->|WebM audio| C[Gemini 2.5 Flash STT]
     C --> D{Command Router}
+    D --> MAIN[Electron Main Process]
 
     D -->|describe / summarize / screen question| E[Desktop Screenshot]
     D -->|browser task| SB[Sally Browser]
@@ -163,8 +165,11 @@ graph TD
     CHECK -->|Yes| EXEC[DOM-first Action Execution]
     EXEC --> SB
 
+    MAIN --> LOGQ[Batch Logger Queue]
+    LOGQ -->|POST /api/log| CR
     GEMINI -.->|hosted path| CR[Google Cloud Run]
     GEMINI -.->|local fallback| LOCALSDK[Google GenAI SDK]
+    CR --> GCL[Google Cloud Logging]
 ```
 
 The important change from earlier versions of Sally is the browser ownership model. Instead of starting a separate automation browser for each task, Sally now owns and reuses one persistent Electron browser surface. The local fallback path uses the `@google/genai` SDK directly from the desktop app.
@@ -331,6 +336,7 @@ Sally can call Gemini directly from the desktop app, but the Cloud Run backend g
 | `GET /health` | Health/status check |
 | `POST /api/interpret-screen` | Browser planning |
 | `POST /api/answer-screen-question` | Screenshot Q&A |
+| `POST /api/log` | Optional structured desktop log ingestion |
 
 ### Request contract for browser planning
 
@@ -366,6 +372,22 @@ Sally can call Gemini directly from the desktop app, but the Cloud Run backend g
 ```
 
 The desktop app prefers the backend when configured and falls back to direct Gemini when needed.
+
+### Optional Cloud Logging pipeline
+
+```text
+Electron main services
+    -> cloudLogger.ts batches structured events
+    -> POST /api/log on sally-backend
+    -> logger.js writes to sally-agent-log
+    -> Google Cloud Logging shows agent activity in Cloud Console
+```
+
+This path is intentionally gated:
+- backend writes only go to Google Cloud Logging when `ENABLE_CLOUD_LOGGING=true`
+- desktop forwarding only leaves the app when the local `cloudLoggingEnabled` store flag is enabled
+
+If either gate is off, Sally falls back to local console logging and the user-facing behavior stays the same.
 
 ---
 
@@ -686,6 +708,7 @@ persistent browser partition -> cookies, local storage, sessions
 Cloud Run gives Sally:
 - a judge-visible hosted Google Cloud path
 - centralized Gemini prompt execution
+- an optional structured logging bridge into Google Cloud Logging
 - a clean backend URL the desktop app can verify from Settings
 
 ### Desktop behavior

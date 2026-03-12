@@ -20,6 +20,7 @@ interface StoreSchema {
   [STORE_KEYS.GEMINI_API_KEY]: string;
   [STORE_KEYS.GEMINI_BACKEND_URL]: string;
   [STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS]: boolean;
+  [STORE_KEYS.CLOUD_LOGGING_ENABLED]: boolean;
 }
 
 const defaultValues: StoreSchema = {
@@ -35,6 +36,7 @@ const defaultValues: StoreSchema = {
   [STORE_KEYS.GEMINI_API_KEY]: '',
   [STORE_KEYS.GEMINI_BACKEND_URL]: '',
   [STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS]: false,
+  [STORE_KEYS.CLOUD_LOGGING_ENABLED]: true,
 };
 
 function getStoreFilePath(): string | null {

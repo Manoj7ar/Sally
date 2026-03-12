@@ -5,14 +5,17 @@
 // POST /api/interpret-user-request  -> { intent, confidence, normalizedInstruction, ... }
 // POST /api/plan-complex-task       -> { status, planSummary, activeSubtask, ... }
 
+import { randomUUID } from 'node:crypto';
 import express from 'express';
 import cors from 'cors';
 import { GoogleGenAI } from '@google/genai';
+import { cloudLoggingEnabled, log } from './logger.js';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = 'gemini-2.5-flash';
+const MAX_LOG_BATCH_ENTRIES = 10;
 const VALID_ACTION_TYPES = new Set([
   'navigate', 'click', 'fill', 'type', 'select', 'press',
   'hover', 'focus', 'check', 'uncheck', 'scroll', 'scroll_up', 'back', 'wait',
@@ -28,9 +31,82 @@ const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+app.use((req, res, next) => {
+  const requestId = randomUUID();
+  const startedAt = Date.now();
+  const timestamp = new Date(startedAt).toISOString();
+
+  req.requestId = requestId;
+  res.setHeader('x-request-id', requestId);
+  res.on('finish', () => {
+    void log('INFO', 'api_request', {
+      requestId,
+      method: req.method,
+      path: req.originalUrl || req.path,
+      timestamp,
+      statusCode: res.statusCode,
+      latencyMs: Date.now() - startedAt,
+    });
+  });
+
+  next();
+});
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', model: GEMINI_MODEL });
+});
+
+app.post('/api/log', async (req, res) => {
+  const entries = req.body?.entries;
+
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return res.status(400).json({ error: 'entries array is required' });
+  }
+
+  if (entries.length > MAX_LOG_BATCH_ENTRIES) {
+    return res.status(400).json({ error: `entries cannot exceed ${MAX_LOG_BATCH_ENTRIES}` });
+  }
+
+  const normalizedEntries = entries.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return null;
+    }
+
+    const metadata = entry.metadata && typeof entry.metadata === 'object' && !Array.isArray(entry.metadata)
+      ? entry.metadata
+      : {};
+
+    return {
+      severity: typeof entry.severity === 'string' ? entry.severity : 'INFO',
+      event: typeof entry.event === 'string' && entry.event.trim() ? entry.event.trim() : null,
+      metadata,
+      timestamp: typeof entry.timestamp === 'string' && entry.timestamp.trim() ? entry.timestamp.trim() : new Date().toISOString(),
+    };
+  });
+
+  if (normalizedEntries.some((entry) => !entry?.event)) {
+    return res.status(400).json({ error: 'each entry must include an event string' });
+  }
+
+  try {
+    await Promise.all(
+      normalizedEntries.map((entry) => log(entry.severity, entry.event, {
+        source: 'electron_main',
+        timestamp: entry.timestamp,
+        requestId: req.requestId || null,
+        metadata: entry.metadata,
+      })),
+    );
+
+    return res.json({ ok: true, accepted: normalizedEntries.length });
+  } catch (error) {
+    console.error('[Sally Backend] Desktop log batch error:', error);
+    void log('ERROR', 'desktop_log_batch_error', {
+      requestId: req.requestId || null,
+      error: serializeError(error),
+    });
+    return res.status(500).json({ error: 'Failed to process log batch' });
+  }
 });
 
 function getGroundingBlock(pageUrl, pageTitle) {
@@ -141,6 +217,40 @@ function parseJsonResponse(text, fallback) {
       return fallback;
     }
   }
+}
+
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack || null,
+    };
+  }
+
+  return {
+    name: 'Error',
+    message: String(error),
+    stack: null,
+  };
+}
+
+function extractUsageMetadata(result) {
+  const usage = result?.usageMetadata;
+  if (!usage || typeof usage !== 'object') {
+    return null;
+  }
+
+  const metadata = {};
+
+  if (Number.isFinite(usage.promptTokenCount)) metadata.promptTokenCount = usage.promptTokenCount;
+  if (Number.isFinite(usage.candidatesTokenCount)) metadata.candidatesTokenCount = usage.candidatesTokenCount;
+  if (Number.isFinite(usage.totalTokenCount)) metadata.totalTokenCount = usage.totalTokenCount;
+  if (Number.isFinite(usage.toolUsePromptTokenCount)) metadata.toolUsePromptTokenCount = usage.toolUsePromptTokenCount;
+  if (Number.isFinite(usage.thoughtsTokenCount)) metadata.thoughtsTokenCount = usage.thoughtsTokenCount;
+  if (Number.isFinite(usage.cachedContentTokenCount)) metadata.cachedContentTokenCount = usage.cachedContentTokenCount;
+
+  return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
 function normalizeInterpretResult(raw) {
@@ -375,9 +485,51 @@ function normalizeTaskPlan(raw, goal) {
   };
 }
 
-async function generateJson({ screenshot, prompt, systemInstruction, fallback, maxOutputTokens = 512, temperature = 0.2 }) {
-  const result = await genai.models.generateContent({
-    model: GEMINI_MODEL,
+async function generateStructuredJson({ operation, contents, systemInstruction, fallback, maxOutputTokens, temperature }) {
+  const startedAt = Date.now();
+
+  try {
+    const result = await genai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        maxOutputTokens,
+        temperature,
+      },
+    });
+
+    void log('INFO', 'gemini_api_result', {
+      operation,
+      model: GEMINI_MODEL,
+      latencyMs: Date.now() - startedAt,
+      usageMetadata: extractUsageMetadata(result),
+    });
+
+    return parseJsonResponse(result.text || '', fallback);
+  } catch (error) {
+    void log('ERROR', 'gemini_api_error', {
+      operation,
+      model: GEMINI_MODEL,
+      latencyMs: Date.now() - startedAt,
+      error: serializeError(error),
+    });
+    throw error;
+  }
+}
+
+async function generateJson({
+  operation = 'generate_json',
+  screenshot,
+  prompt,
+  systemInstruction,
+  fallback,
+  maxOutputTokens = 512,
+  temperature = 0.2,
+}) {
+  return generateStructuredJson({
+    operation,
     contents: [
       {
         role: 'user',
@@ -392,35 +544,34 @@ async function generateJson({ screenshot, prompt, systemInstruction, fallback, m
         ],
       },
     ],
-    config: {
-      systemInstruction,
-      responseMimeType: 'application/json',
-      maxOutputTokens,
-      temperature,
-    },
+    systemInstruction,
+    fallback,
+    maxOutputTokens,
+    temperature,
   });
-
-  return parseJsonResponse(result.text || '', fallback);
 }
 
-async function generateTextJson({ prompt, systemInstruction, fallback, maxOutputTokens = 256, temperature = 0.1 }) {
-  const result = await genai.models.generateContent({
-    model: GEMINI_MODEL,
+async function generateTextJson({
+  operation = 'generate_text_json',
+  prompt,
+  systemInstruction,
+  fallback,
+  maxOutputTokens = 256,
+  temperature = 0.1,
+}) {
+  return generateStructuredJson({
+    operation,
     contents: [
       {
         role: 'user',
         parts: [{ text: prompt }],
       },
     ],
-    config: {
-      systemInstruction,
-      responseMimeType: 'application/json',
-      maxOutputTokens,
-      temperature,
-    },
+    systemInstruction,
+    fallback,
+    maxOutputTokens,
+    temperature,
   });
-
-  return parseJsonResponse(result.text || '', fallback);
 }
 
 app.post('/api/interpret-screen', async (req, res) => {
@@ -515,6 +666,7 @@ Use switch_tab when the needed page is already open.`;
 
   try {
     const raw = await generateJson({
+      operation: 'interpret_screen',
       screenshot,
       prompt,
       systemInstruction: systemPrompt,
@@ -526,6 +678,11 @@ Use switch_tab when the needed page is already open.`;
     return res.json(normalizeInterpretResult(raw));
   } catch (error) {
     console.error('[Sally Backend] Gemini interpret error:', error);
+    void log('ERROR', 'route_error', {
+      route: '/api/interpret-screen',
+      requestId: req.requestId || null,
+      error: serializeError(error),
+    });
     const message = error instanceof Error ? error.message : String(error);
     return res.status(500).json({ error: `Gemini API error: ${message}` });
   }
@@ -569,6 +726,7 @@ Respond with valid JSON only:
 
   try {
     const raw = await generateJson({
+      operation: 'answer_screen_question',
       screenshot,
       prompt,
       systemInstruction: systemPrompt,
@@ -584,6 +742,11 @@ Respond with valid JSON only:
     return res.json(normalizeScreenQuestionResult(raw));
   } catch (error) {
     console.error('[Sally Backend] Gemini screen-question error:', error);
+    void log('ERROR', 'route_error', {
+      route: '/api/answer-screen-question',
+      requestId: req.requestId || null,
+      error: serializeError(error),
+    });
     const message = error instanceof Error ? error.message : String(error);
     return res.status(500).json({ error: `Gemini API error: ${message}` });
   }
@@ -674,6 +837,7 @@ Guidance:
 
   try {
     const raw = await generateJson({
+      operation: 'analyze_browser_rescue',
       screenshot,
       prompt,
       systemInstruction: systemPrompt,
@@ -689,6 +853,11 @@ Guidance:
     return res.json(normalizeBrowserRescueAnalysis(raw));
   } catch (error) {
     console.error('[Sally Backend] Gemini browser-rescue error:', error);
+    void log('ERROR', 'route_error', {
+      route: '/api/analyze-browser-rescue',
+      requestId: req.requestId || null,
+      error: serializeError(error),
+    });
     const message = error instanceof Error ? error.message : String(error);
     return res.status(500).json({ error: `Gemini API error: ${message}` });
   }
@@ -777,6 +946,7 @@ Guidance:
 
   try {
     const raw = await generateTextJson({
+      operation: 'interpret_user_request',
       prompt,
       systemInstruction: systemPrompt,
       fallback: {
@@ -794,6 +964,11 @@ Guidance:
     return res.json(normalizeUserRequestInterpretation(raw, transcript));
   } catch (error) {
     console.error('[Sally Backend] Gemini user-request error:', error);
+    void log('ERROR', 'route_error', {
+      route: '/api/interpret-user-request',
+      requestId: req.requestId || null,
+      error: serializeError(error),
+    });
     const message = error instanceof Error ? error.message : String(error);
     return res.status(500).json({ error: `Gemini API error: ${message}` });
   }
@@ -907,6 +1082,7 @@ Guidance:
 
   try {
     const raw = await generateTextJson({
+      operation: 'plan_complex_task',
       prompt,
       systemInstruction: systemPrompt,
       fallback: {
@@ -932,12 +1108,20 @@ Guidance:
     return res.json(normalizeTaskPlan(raw, goal));
   } catch (error) {
     console.error('[Sally Backend] Gemini planner error:', error);
+    void log('ERROR', 'route_error', {
+      route: '/api/plan-complex-task',
+      requestId: req.requestId || null,
+      error: serializeError(error),
+    });
     const message = error instanceof Error ? error.message : String(error);
     return res.status(500).json({ error: `Gemini API error: ${message}` });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Sally Vision Backend running on port ${PORT}`);
-  console.log(`Gemini model: ${GEMINI_MODEL}`);
+  void log('INFO', 'backend_startup', {
+    port: PORT,
+    model: GEMINI_MODEL,
+    cloudLoggingEnabled,
+  });
 });

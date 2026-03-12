@@ -2,6 +2,7 @@
 
 import { BrowserWindow, screen } from 'electron';
 import type { GeminiAction } from './geminiService.js';
+import { cloudLog } from './cloudLogger.js';
 import type { BrowserSnapshot, BrowserSourceMode, BrowserTabInfo, PageContext } from './pageContext.js';
 import { runDomTaskInPage } from './browserDomRuntime.js';
 import { destinationResolver } from './destinationResolver.js';
@@ -48,6 +49,7 @@ class BrowserService {
 
   async launch(startUrl?: string): Promise<BrowserWindow> {
     let tab = this.getActiveTab();
+    const reusedExistingTab = Boolean(tab);
     if (!tab) {
       this.launchNotice = 'Opening Sally browser for this task.';
       tab = await this.createTab(startUrl || 'https://www.google.com', true);
@@ -58,6 +60,16 @@ class BrowserService {
         await this.ensurePageUrl(tab.window, 'https://www.google.com');
       }
       await this.showTab(tab.id);
+    }
+
+    if (!reusedExistingTab || startUrl) {
+      cloudLog('INFO', 'browser_task_start', {
+        startUrl: startUrl || null,
+        reusedExistingTab,
+        activeTabId: tab.id,
+        pageUrl: tab.window.webContents.getURL() || null,
+        pageTitle: tab.window.webContents.getTitle() || null,
+      });
     }
 
     return tab.window;
@@ -181,18 +193,25 @@ class BrowserService {
   async executeAction(action: GeminiAction): Promise<string> {
     const window = await this.launch();
     const contents = window.webContents;
+    const startedAt = Date.now();
 
     try {
+      let result: string;
+
       switch (action.type) {
         case 'navigate': {
-          if (!action.url) return 'No URL provided';
+          if (!action.url) {
+            result = 'No URL provided';
+            break;
+          }
           const url = await this.resolveNavigationTarget(action.url);
           const beforeUrl = contents.getURL();
           await this.ensurePageUrl(window, url);
           const afterUrl = await this.waitForNavigationResult(window, beforeUrl, url);
-          return afterUrl && (afterUrl !== beforeUrl || this.isEquivalentNavigationUrl(afterUrl, url))
+          result = afterUrl && (afterUrl !== beforeUrl || this.isEquivalentNavigationUrl(afterUrl, url))
             ? `Navigated to ${afterUrl}`
             : `Action failed: did not navigate to ${url}`;
+          break;
         }
 
         case 'open_tab': {
@@ -200,56 +219,69 @@ class BrowserService {
           const targetUrl = rawUrl ? await this.resolveNavigationTarget(rawUrl) : undefined;
           const tab = await this.openTab(targetUrl, { activate: true });
           await this.waitForSettle('open_tab');
-          return `Opened new tab "${tab.title || tab.url}"`;
+          result = `Opened new tab "${tab.title || tab.url}"`;
+          break;
         }
 
         case 'switch_tab': {
           const resolved = await this.switchTab(action);
           if (!resolved) {
-            return 'Action failed: could not find a matching tab';
+            result = 'Action failed: could not find a matching tab';
+            break;
           }
           await this.waitForSettle('switch_tab');
-          return `Switched to tab "${resolved.title || resolved.url}"`;
+          result = `Switched to tab "${resolved.title || resolved.url}"`;
+          break;
         }
 
         case 'press': {
           const key = action.value?.trim() || 'Enter';
           await this.sendKeyPress(key);
-          return `Pressed ${key}`;
+          result = `Pressed ${key}`;
+          break;
         }
 
         case 'type': {
           const text = action.value || '';
-          if (!text) return 'No text to type';
+          if (!text) {
+            result = 'No text to type';
+            break;
+          }
           await this.sendText(text);
-          return `Typed "${text}" via keyboard`;
+          result = `Typed "${text}" via keyboard`;
+          break;
         }
 
         case 'scroll': {
           await contents.executeJavaScript('window.scrollBy({ top: Math.max(window.innerHeight * 0.7, 420), behavior: "smooth" });', true);
-          return 'Scrolled down';
+          result = 'Scrolled down';
+          break;
         }
 
         case 'scroll_up': {
           await contents.executeJavaScript('window.scrollBy({ top: -Math.max(window.innerHeight * 0.7, 420), behavior: "smooth" });', true);
-          return 'Scrolled up';
+          result = 'Scrolled up';
+          break;
         }
 
         case 'back': {
           const beforeUrl = contents.getURL();
           if (!contents.canGoBack()) {
-            return 'Cannot go back, no previous page';
+            result = 'Cannot go back, no previous page';
+            break;
           }
           contents.goBack();
           await this.waitForSettle('back');
           const afterUrl = contents.getURL();
-          return afterUrl && afterUrl !== beforeUrl ? 'Went back to previous page' : 'Cannot go back, no previous page';
+          result = afterUrl && afterUrl !== beforeUrl ? 'Went back to previous page' : 'Cannot go back, no previous page';
+          break;
         }
 
         case 'wait': {
           const ms = Math.min(parseInt(action.value || '2000', 10) || 2000, 5000);
           await new Promise((resolve) => setTimeout(resolve, ms));
-          return `Waited ${ms}ms`;
+          result = `Waited ${ms}ms`;
+          break;
         }
 
         case 'click':
@@ -260,15 +292,57 @@ class BrowserService {
         case 'check':
         case 'uncheck': {
           const result = await this.runDomAction(action);
-          return result.ok ? result.message : this.mapDomFailure(action, result.message);
+          const message = result.ok ? result.message : this.mapDomFailure(action, result.message);
+          cloudLog(result.ok ? 'INFO' : 'WARNING', 'browser_action_iteration', {
+            actionType: action.type,
+            selector: action.selector || null,
+            targetId: action.targetId || null,
+            framePath: action.framePath || null,
+            shadowPath: action.shadowPath || null,
+            latencyMs: Date.now() - startedAt,
+            success: result.ok,
+            result: message,
+          });
+          return message;
         }
 
         default:
-          return `Unknown action type: ${action.type}`;
+          result = `Unknown action type: ${action.type}`;
+          break;
       }
+
+      cloudLog(
+        result.startsWith('Action failed') || result.startsWith('Cannot') || result.startsWith('Unknown') || result.startsWith('No ')
+          ? 'WARNING'
+          : 'INFO',
+        'browser_action_iteration',
+        {
+          actionType: action.type,
+          selector: action.selector || null,
+          targetId: action.targetId || null,
+          url: action.url || null,
+          valueLength: typeof action.value === 'string' ? action.value.length : null,
+          tabId: action.tabId || null,
+          latencyMs: Date.now() - startedAt,
+          success: !(result.startsWith('Action failed') || result.startsWith('Cannot') || result.startsWith('Unknown') || result.startsWith('No ')),
+          result,
+        },
+      );
+
+      return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[BrowserService] Action failed:', message);
+      cloudLog('ERROR', 'browser_action_iteration', {
+        actionType: action.type,
+        selector: action.selector || null,
+        targetId: action.targetId || null,
+        url: action.url || null,
+        tabId: action.tabId || null,
+        latencyMs: Date.now() - startedAt,
+        success: false,
+        error: message,
+      });
       return `Action failed: ${message}`;
     }
   }

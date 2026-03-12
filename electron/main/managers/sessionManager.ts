@@ -5,6 +5,7 @@ import { ttsService } from '../services/ttsService.js';
 import { geminiService } from '../services/geminiService.js';
 import { screenshotService } from '../services/screenshotService.js';
 import { browserService } from '../services/browserService.js';
+import { cloudLog } from '../services/cloudLogger.js';
 import { destinationResolver } from '../services/destinationResolver.js';
 import { apiKeyManager } from './apiKeyManager.js';
 import type {
@@ -12,6 +13,7 @@ import type {
   GeminiTaskPlan,
   GeminiTaskSubtask,
   GeminiUserRequestInterpretation,
+  GeminiUserRequestIntent,
   RecentUserTurn,
 } from '../services/geminiService.js';
 import type { TranscriptionResult } from '../services/whisperService.js';
@@ -2298,6 +2300,22 @@ class SessionManager {
     });
   }
 
+  private serializeLoggingError(error: unknown): Record<string, string | null> {
+    if (error instanceof Error) {
+      return {
+        name: error.name,
+        message: error.message,
+        stack: error.stack || null,
+      };
+    }
+
+    return {
+      name: 'Error',
+      message: String(error),
+      stack: null,
+    };
+  }
+
   private isBusyState(): boolean {
     return this.state === 'processing'
       || this.state === 'acting'
@@ -2480,6 +2498,12 @@ class SessionManager {
   async handleTranscription(audioBase64: string, mimeType: string, durationMs?: number): Promise<string> {
     const runId = this.startRun();
     this.setState('processing');
+    cloudLog('INFO', 'session_start', {
+      source: 'voice',
+      runId,
+      mimeType,
+      durationMs: durationMs ?? null,
+    });
 
     try {
       if (!this.isRunCurrent(runId)) {
@@ -2545,6 +2569,11 @@ class SessionManager {
     ttsService.stop();
     const runId = this.startRun();
     this.setState('processing');
+    cloudLog('INFO', 'session_start', {
+      source: 'typed',
+      runId,
+      textLength: text.trim().length,
+    });
     await this.executeTaskForRun(text, runId, 'typed');
   }
 
@@ -2572,174 +2601,234 @@ class SessionManager {
     if (!this.isRunCurrent(runId)) return '';
 
     const trimmed = text.trim();
-    if (!trimmed) {
-      if (this.isRunCurrent(runId)) {
-        ttsService.speakImmediate("I didn't catch that clearly. Please say it again.");
-        this.setState('idle');
-      }
-      return '';
-    }
+    let sessionEndStatus = 'completed';
+    let interpretedIntent: GeminiUserRequestIntent | null = null;
+    const sessionEndMetadata: Record<string, unknown> = {
+      runId,
+      source,
+      textLength: trimmed.length,
+    };
 
-    this.broadcastChat('user', trimmed);
-
-    if (await this.handlePendingRiskyActionResponse(trimmed, runId)) {
-      return trimmed;
-    }
-
-    const interpretation = await this.interpretUserRequest(trimmed, source);
-    if (!this.isRunCurrent(runId)) {
-      return trimmed;
-    }
-
-    this.logInterpretation(trimmed, interpretation);
-
-    switch (interpretation.intent) {
-      case 'cancel':
-        this.clearPendingClarification();
-        this.clearPendingRiskyAction();
-        await this.cancel();
-        return 'cancel';
-
-      case 'describe_screen':
-        this.clearPendingClarification();
-        this.addRecentTurn({
-          user: trimmed,
-          intent: interpretation.intent,
-          normalizedInstruction: interpretation.normalizedInstruction,
-        });
-        await this.describeScreen(runId);
-        return interpretation.normalizedInstruction || trimmed;
-
-      case 'summarize_screen':
-        this.clearPendingClarification();
-        this.addRecentTurn({
-          user: trimmed,
-          intent: interpretation.intent,
-          normalizedInstruction: interpretation.normalizedInstruction,
-        });
-        await this.summarizeScreen(runId);
-        return interpretation.normalizedInstruction || trimmed;
-
-      case 'screen_question':
-        this.clearPendingClarification();
-        this.addRecentTurn({
-          user: trimmed,
-          intent: interpretation.intent,
-          normalizedInstruction: interpretation.normalizedInstruction,
-        });
-        await this.answerScreenQuestion(interpretation.normalizedInstruction || trimmed, runId);
-        return interpretation.normalizedInstruction || trimmed;
-
-      case 'browser_assistive': {
-        const browserAssistiveIntent = interpretation.browserAssistiveIntent || 'actions';
-        this.clearPendingClarification();
-        this.addRecentTurn({
-          user: trimmed,
-          intent: interpretation.intent,
-          normalizedInstruction: interpretation.normalizedInstruction,
-          browserAssistiveIntent,
-        });
-        await this.handleAssistiveBrowserCommand(browserAssistiveIntent, runId);
-        return interpretation.normalizedInstruction || trimmed;
-      }
-
-      case 'browser_rescue': {
-        this.clearPendingClarification();
-        this.addRecentTurn({
-          user: trimmed,
-          intent: interpretation.intent,
-          normalizedInstruction: interpretation.normalizedInstruction,
-        });
-        await this.handleBrowserRescue(runId, 'manual');
-        return interpretation.normalizedInstruction || trimmed;
-      }
-
-      case 'smart_home': {
-        this.clearPendingClarification();
-        this.clearPendingRiskyAction();
-        const normalizedInstruction = interpretation.normalizedInstruction || trimmed;
-        const expanded = this.expandSmartCommand(normalizedInstruction);
-        if (expanded !== normalizedInstruction) {
-          console.log('[SessionManager] Smart command expanded:', normalizedInstruction, '->', expanded);
-        }
-        this.addRecentTurn({
-          user: trimmed,
-          intent: interpretation.intent,
-          normalizedInstruction,
-        });
-        this.currentTask = this.createTaskContext(expanded, runId);
-        await this.runPlannedBrowserTask(this.currentTask, runId);
-        return expanded;
-      }
-
-      case 'browser_task': {
-        this.clearPendingClarification();
-        this.clearPendingRiskyAction();
-        const normalizedInstruction = interpretation.normalizedInstruction || trimmed;
-        this.addRecentTurn({
-          user: trimmed,
-          intent: interpretation.intent,
-          normalizedInstruction,
-        });
-        const simpleOpenGoal = await this.resolveSimpleOpenGoal(normalizedInstruction);
-        if (simpleOpenGoal && await this.handleSimpleDirectOpen(simpleOpenGoal, runId)) {
-          return normalizedInstruction;
-        }
-        this.currentTask = this.createTaskContext(normalizedInstruction, runId);
-        await this.runPlannedBrowserTask(this.currentTask, runId);
-        return normalizedInstruction;
-      }
-
-      case 'chat': {
-        this.clearPendingClarification();
-        const response = interpretation.spokenResponse || GENERIC_CHAT_RESPONSE;
-        this.addRecentTurn({
-          user: trimmed,
-          assistant: response,
-          intent: interpretation.intent,
-          normalizedInstruction: interpretation.normalizedInstruction,
-        });
-        this.broadcastChat('assistant', response);
-        await ttsService.speakImmediate(response);
+    try {
+      if (!trimmed) {
+        sessionEndStatus = 'empty_input';
         if (this.isRunCurrent(runId)) {
-          this.setState('idle');
-        }
-        return response;
-      }
-
-      case 'clarify': {
-        const question = interpretation.clarificationQuestion || GENERIC_CLARIFICATION_RESPONSE;
-        this.pendingClarificationQuestion = question;
-        this.addRecentTurn({
-          user: trimmed,
-          assistant: question,
-          intent: interpretation.intent,
-          normalizedInstruction: interpretation.normalizedInstruction,
-        });
-        if (this.isRunCurrent(runId)) {
-          this.setState('awaiting_response');
-        }
-        this.broadcastChat('assistant', question);
-        await ttsService.speakImmediate(question);
-        if (this.isRunCurrent(runId)) {
-          this.setState('awaiting_response');
-        }
-        return question;
-      }
-
-      case 'none':
-      default: {
-        const response = this.pendingClarificationQuestion
-          ? "Sorry, I still didn't catch that. Let's try again."
-          : "I didn't catch that clearly. Please say it again.";
-        this.clearPendingClarification();
-        this.clearPendingRiskyAction();
-        this.broadcastChat('assistant', response);
-        await ttsService.speakImmediate(response);
-        if (this.isRunCurrent(runId)) {
+          ttsService.speakImmediate("I didn't catch that clearly. Please say it again.");
           this.setState('idle');
         }
         return '';
+      }
+
+      this.broadcastChat('user', trimmed);
+
+      if (await this.handlePendingRiskyActionResponse(trimmed, runId)) {
+        sessionEndStatus = this.state === 'awaiting_response' ? 'awaiting_response' : 'completed';
+        sessionEndMetadata.pendingRiskyActionResponse = true;
+        return trimmed;
+      }
+
+      const interpretation = await this.interpretUserRequest(trimmed, source);
+      if (!this.isRunCurrent(runId)) {
+        sessionEndStatus = 'interrupted';
+        return trimmed;
+      }
+
+      interpretedIntent = interpretation.intent;
+      this.logInterpretation(trimmed, interpretation);
+      cloudLog('INFO', 'intent_classification', {
+        runId,
+        source,
+        intent: interpretation.intent,
+        confidence: interpretation.confidence,
+        normalizedInstruction: interpretation.normalizedInstruction,
+        browserAssistiveIntent: interpretation.browserAssistiveIntent,
+        clarificationQuestion: interpretation.clarificationQuestion,
+        hasSpokenResponse: Boolean(interpretation.spokenResponse),
+      });
+
+      switch (interpretation.intent) {
+        case 'cancel':
+          sessionEndStatus = 'cancelled';
+          this.clearPendingClarification();
+          this.clearPendingRiskyAction();
+          await this.cancel();
+          return 'cancel';
+
+        case 'describe_screen':
+          sessionEndStatus = 'completed';
+          this.clearPendingClarification();
+          this.addRecentTurn({
+            user: trimmed,
+            intent: interpretation.intent,
+            normalizedInstruction: interpretation.normalizedInstruction,
+          });
+          await this.describeScreen(runId);
+          return interpretation.normalizedInstruction || trimmed;
+
+        case 'summarize_screen':
+          sessionEndStatus = 'completed';
+          this.clearPendingClarification();
+          this.addRecentTurn({
+            user: trimmed,
+            intent: interpretation.intent,
+            normalizedInstruction: interpretation.normalizedInstruction,
+          });
+          await this.summarizeScreen(runId);
+          return interpretation.normalizedInstruction || trimmed;
+
+        case 'screen_question':
+          sessionEndStatus = 'completed';
+          this.clearPendingClarification();
+          this.addRecentTurn({
+            user: trimmed,
+            intent: interpretation.intent,
+            normalizedInstruction: interpretation.normalizedInstruction,
+          });
+          await this.answerScreenQuestion(interpretation.normalizedInstruction || trimmed, runId);
+          return interpretation.normalizedInstruction || trimmed;
+
+        case 'browser_assistive': {
+          const browserAssistiveIntent = interpretation.browserAssistiveIntent || 'actions';
+          this.clearPendingClarification();
+          this.addRecentTurn({
+            user: trimmed,
+            intent: interpretation.intent,
+            normalizedInstruction: interpretation.normalizedInstruction,
+            browserAssistiveIntent,
+          });
+          await this.handleAssistiveBrowserCommand(browserAssistiveIntent, runId);
+          sessionEndStatus = this.state === 'awaiting_response' ? 'awaiting_response' : 'completed';
+          return interpretation.normalizedInstruction || trimmed;
+        }
+
+        case 'browser_rescue': {
+          this.clearPendingClarification();
+          this.addRecentTurn({
+            user: trimmed,
+            intent: interpretation.intent,
+            normalizedInstruction: interpretation.normalizedInstruction,
+          });
+          await this.handleBrowserRescue(runId, 'manual');
+          sessionEndStatus = this.state === 'awaiting_response' ? 'awaiting_response' : 'completed';
+          return interpretation.normalizedInstruction || trimmed;
+        }
+
+        case 'smart_home': {
+          this.clearPendingClarification();
+          this.clearPendingRiskyAction();
+          const normalizedInstruction = interpretation.normalizedInstruction || trimmed;
+          const expanded = this.expandSmartCommand(normalizedInstruction);
+          if (expanded !== normalizedInstruction) {
+            console.log('[SessionManager] Smart command expanded:', normalizedInstruction, '->', expanded);
+          }
+          this.addRecentTurn({
+            user: trimmed,
+            intent: interpretation.intent,
+            normalizedInstruction,
+          });
+          const taskContext = this.createTaskContext(expanded, runId);
+          this.currentTask = taskContext;
+          sessionEndMetadata.taskGoal = expanded;
+          await this.runPlannedBrowserTask(taskContext, runId);
+          sessionEndStatus = taskContext.status || (this.state === 'awaiting_response' ? 'awaiting_response' : 'completed');
+          sessionEndMetadata.taskStatus = taskContext.status || null;
+          return expanded;
+        }
+
+        case 'browser_task': {
+          this.clearPendingClarification();
+          this.clearPendingRiskyAction();
+          const normalizedInstruction = interpretation.normalizedInstruction || trimmed;
+          this.addRecentTurn({
+            user: trimmed,
+            intent: interpretation.intent,
+            normalizedInstruction,
+          });
+          const simpleOpenGoal = await this.resolveSimpleOpenGoal(normalizedInstruction);
+          if (simpleOpenGoal && await this.handleSimpleDirectOpen(simpleOpenGoal, runId)) {
+            sessionEndStatus = 'completed';
+            sessionEndMetadata.taskStatus = 'simple_direct_open';
+            sessionEndMetadata.taskGoal = normalizedInstruction;
+            return normalizedInstruction;
+          }
+          const taskContext = this.createTaskContext(normalizedInstruction, runId);
+          this.currentTask = taskContext;
+          sessionEndMetadata.taskGoal = normalizedInstruction;
+          await this.runPlannedBrowserTask(taskContext, runId);
+          sessionEndStatus = taskContext.status || (this.state === 'awaiting_response' ? 'awaiting_response' : 'completed');
+          sessionEndMetadata.taskStatus = taskContext.status || null;
+          return normalizedInstruction;
+        }
+
+        case 'chat': {
+          sessionEndStatus = 'completed';
+          this.clearPendingClarification();
+          const response = interpretation.spokenResponse || GENERIC_CHAT_RESPONSE;
+          this.addRecentTurn({
+            user: trimmed,
+            assistant: response,
+            intent: interpretation.intent,
+            normalizedInstruction: interpretation.normalizedInstruction,
+          });
+          this.broadcastChat('assistant', response);
+          await ttsService.speakImmediate(response);
+          if (this.isRunCurrent(runId)) {
+            this.setState('idle');
+          }
+          return response;
+        }
+
+        case 'clarify': {
+          sessionEndStatus = 'awaiting_response';
+          const question = interpretation.clarificationQuestion || GENERIC_CLARIFICATION_RESPONSE;
+          this.pendingClarificationQuestion = question;
+          this.addRecentTurn({
+            user: trimmed,
+            assistant: question,
+            intent: interpretation.intent,
+            normalizedInstruction: interpretation.normalizedInstruction,
+          });
+          if (this.isRunCurrent(runId)) {
+            this.setState('awaiting_response');
+          }
+          this.broadcastChat('assistant', question);
+          await ttsService.speakImmediate(question);
+          if (this.isRunCurrent(runId)) {
+            this.setState('awaiting_response');
+          }
+          return question;
+        }
+
+        case 'none':
+        default: {
+          sessionEndStatus = 'ignored';
+          const response = this.pendingClarificationQuestion
+            ? "Sorry, I still didn't catch that. Let's try again."
+            : "I didn't catch that clearly. Please say it again.";
+          this.clearPendingClarification();
+          this.clearPendingRiskyAction();
+          this.broadcastChat('assistant', response);
+          await ttsService.speakImmediate(response);
+          if (this.isRunCurrent(runId)) {
+            this.setState('idle');
+          }
+          return '';
+        }
+      }
+    } catch (error) {
+      sessionEndStatus = 'failed';
+      sessionEndMetadata.error = this.serializeLoggingError(error);
+      throw error;
+    } finally {
+      if (sessionEndStatus !== 'interrupted') {
+        cloudLog(sessionEndStatus === 'failed' ? 'ERROR' : 'INFO', 'session_end', {
+          ...sessionEndMetadata,
+          intent: interpretedIntent,
+          status: sessionEndStatus,
+          state: this.state,
+          currentTaskStatus: this.currentTask?.status || null,
+          currentTaskGoal: this.currentTask?.goal || null,
+        });
       }
     }
   }
@@ -3393,6 +3482,13 @@ class SessionManager {
         // Check timeout
         if (Date.now() - startTime > MAX_DURATION_MS) {
           console.log('[SessionManager] Agentic loop timed out');
+          cloudLog('WARNING', 'task_failed', {
+            runId,
+            goal: instruction,
+            status: 'timeout',
+            durationMs: Date.now() - startTime,
+            historyLength: history.length,
+          });
           ttsService.speak("This is taking a while, so I'll stop here. You can try again with a simpler request.");
           break;
         }
@@ -3452,6 +3548,12 @@ class SessionManager {
         // If no action needed, task is complete
         if (!result.action || result.action.type === 'null') {
           console.log('[SessionManager] Agentic loop complete — no more actions');
+          cloudLog('INFO', 'task_completed', {
+            runId,
+            goal: instruction,
+            durationMs: Date.now() - startTime,
+            historyLength: history.length,
+          });
           break;
         }
 
@@ -3482,6 +3584,13 @@ class SessionManager {
     } catch (error) {
       if (!this.isRunCurrent(runId)) return;
       console.error('[SessionManager] Agentic browse failed:', error);
+      cloudLog('ERROR', 'task_failed', {
+        runId,
+        goal: instruction,
+        status: 'exception',
+        durationMs: Date.now() - startTime,
+        error: this.serializeLoggingError(error),
+      });
       ttsService.stop();
       ttsService.speakImmediate("Something went wrong. Let me know if you'd like to try again.");
     } finally {
@@ -3539,6 +3648,14 @@ class SessionManager {
 
         if (Date.now() - context.startTime > MAX_DURATION_MS) {
           context.status = 'failed';
+          cloudLog('WARNING', 'task_failed', {
+            runId,
+            goal: context.goal,
+            status: 'timeout',
+            durationMs: Date.now() - context.startTime,
+            totalActions: context.totalActions,
+            failureCount: context.failureCount,
+          });
           const response = "This is taking a while, so I'll stop here. You can try again with a simpler request.";
           this.broadcastChat('assistant', response);
           await ttsService.speakImmediate(response);
@@ -3613,6 +3730,17 @@ class SessionManager {
             if (plan.status === 'blocked') {
               const response = plan.blockedReason || "I'm blocked on that task right now.";
               context.status = 'failed';
+              cloudLog('WARNING', 'task_failed', {
+                runId,
+                goal: context.goal,
+                status: 'blocked',
+                blockedReason: response,
+                planSummary: context.planSummary,
+                activeSubtask: context.activeSubtask,
+                durationMs: Date.now() - context.startTime,
+                totalActions: context.totalActions,
+                failureCount: context.failureCount,
+              });
               this.broadcastChat('assistant', response);
               await ttsService.speakImmediate(response);
               break;
@@ -3621,6 +3749,15 @@ class SessionManager {
             if (plan.status === 'complete') {
               context.status = 'completed';
               const response = plan.completionNarration || 'That task is complete.';
+              cloudLog('INFO', 'task_completed', {
+                runId,
+                goal: context.goal,
+                planSummary: context.planSummary,
+                activeSubtask: context.activeSubtask,
+                durationMs: Date.now() - context.startTime,
+                totalActions: context.totalActions,
+                rememberedFacts: context.workingMemory.length,
+              });
               this.broadcastChat('assistant', response);
               await ttsService.speakImmediate(response);
               break;
@@ -3773,6 +3910,17 @@ class SessionManager {
       if (!this.isRunCurrent(runId)) return;
       console.error('[SessionManager] Agentic browse failed:', error);
       context.status = 'failed';
+      cloudLog('ERROR', 'task_failed', {
+        runId,
+        goal: context.goal,
+        status: 'exception',
+        planSummary: context.planSummary,
+        activeSubtask: context.activeSubtask,
+        durationMs: Date.now() - context.startTime,
+        totalActions: context.totalActions,
+        failureCount: context.failureCount,
+        error: this.serializeLoggingError(error),
+      });
       ttsService.stop();
       ttsService.speakImmediate("Something went wrong. Let me know if you'd like to try again.");
     } finally {
@@ -3839,7 +3987,14 @@ class SessionManager {
   }
 
   async cancel(): Promise<void> {
+    const cancelledRunId = this.runGeneration;
     this.invalidateRun();
+    cloudLog('INFO', 'session_cancelled', {
+      runId: cancelledRunId,
+      state: this.state,
+      currentTaskGoal: this.currentTask?.goal || null,
+      currentTaskStatus: this.currentTask?.status || null,
+    });
     this.clearPendingClarification();
     this.clearPendingRiskyAction();
     this.currentTask = null;

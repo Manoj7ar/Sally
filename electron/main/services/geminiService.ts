@@ -2,6 +2,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyManager } from '../managers/apiKeyManager.js';
 import { GEMINI_MODEL } from '../utils/constants.js';
+import { cloudLog } from './cloudLogger.js';
 import type { BrowserSourceMode, BrowserTabInfo, PageContext } from './pageContext.js';
 
 export interface GeminiAction {
@@ -162,6 +163,15 @@ interface PlanComplexTaskParams {
   tabs?: BrowserTabInfo[];
   activeTabId?: string | null;
   triggerReason?: string | null;
+}
+
+interface GeminiUsageMetadata {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  totalTokenCount?: number;
+  toolUsePromptTokenCount?: number;
+  thoughtsTokenCount?: number;
+  cachedContentTokenCount?: number;
 }
 
 const BACKEND_COOLDOWN_MS = 5 * 60 * 1000;
@@ -339,6 +349,7 @@ class GeminiService {
 
   async interpretScreen(params: InterpretParams): Promise<GeminiInterpretResult> {
     return this.withBackendFallback(
+      'interpret_screen',
       (backendUrl) => this.interpretWithBackend(backendUrl, params),
       () => this.interpretDirect(params),
     );
@@ -346,6 +357,7 @@ class GeminiService {
 
   async answerScreenQuestion(params: ScreenQuestionParams): Promise<GeminiScreenQuestionResult> {
     return this.withBackendFallback(
+      'answer_screen_question',
       (backendUrl) => this.answerScreenQuestionWithBackend(backendUrl, params),
       () => this.answerScreenQuestionDirect(params),
     );
@@ -353,6 +365,7 @@ class GeminiService {
 
   async analyzeBrowserRescue(params: BrowserRescueParams): Promise<GeminiBrowserRescueAnalysis> {
     return this.withBackendFallback(
+      'analyze_browser_rescue',
       (backendUrl) => this.analyzeBrowserRescueWithBackend(backendUrl, params),
       () => this.analyzeBrowserRescueDirect(params),
     );
@@ -364,6 +377,7 @@ class GeminiService {
 
   async interpretUserRequest(params: InterpretUserRequestParams): Promise<GeminiUserRequestInterpretation> {
     return this.withBackendFallback(
+      'interpret_user_request',
       (backendUrl) => this.interpretUserRequestWithBackend(backendUrl, params),
       () => this.interpretUserRequestDirect(params),
     );
@@ -371,12 +385,14 @@ class GeminiService {
 
   async planComplexTask(params: PlanComplexTaskParams): Promise<GeminiTaskPlan> {
     return this.withBackendFallback(
+      'plan_complex_task',
       (backendUrl) => this.planComplexTaskWithBackend(backendUrl, params),
       () => this.planComplexTaskDirect(params),
     );
   }
 
   private async withBackendFallback<T>(
+    operation: string,
     backendCall: (backendUrl: string) => Promise<T>,
     directCall: () => Promise<T>,
   ): Promise<T> {
@@ -390,6 +406,12 @@ class GeminiService {
         backendError = error instanceof Error ? error : new Error(String(error));
         this.backendCooldownUntil = Date.now() + BACKEND_COOLDOWN_MS;
         console.warn('[GeminiService] Backend failed, falling back to direct Gemini:', backendError.message);
+        cloudLog('WARNING', 'gemini_backend_fallback', {
+          operation,
+          backendUrl,
+          backendCooldownUntil: this.backendCooldownUntil,
+          error: this.serializeError(backendError),
+        });
       }
     }
 
@@ -443,19 +465,41 @@ class GeminiService {
 
   private async postToBackend<T>(backendUrl: string, route: string, body: object): Promise<T> {
     const url = `${backendUrl.replace(/\/$/, '')}${route}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
-    });
+    const startedAt = Date.now();
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      throw new Error(`Gemini backend error: ${response.status} ${errorText}`);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        throw new Error(`Gemini backend error: ${response.status} ${errorText}`);
+      }
+
+      cloudLog('INFO', 'gemini_api_call', {
+        endpoint: 'backend',
+        route,
+        model: GEMINI_MODEL,
+        latencyMs: Date.now() - startedAt,
+        success: true,
+      });
+
+      return response.json() as Promise<T>;
+    } catch (error) {
+      cloudLog('ERROR', 'gemini_api_call', {
+        endpoint: 'backend',
+        route,
+        model: GEMINI_MODEL,
+        latencyMs: Date.now() - startedAt,
+        success: false,
+        error: this.serializeError(error),
+      });
+      throw error;
     }
-
-    return response.json() as Promise<T>;
   }
 
   private getDirectClient(): GoogleGenAI {
@@ -686,6 +730,7 @@ Use open_tab when you need another page or source to complete the goal.
 Use switch_tab when the needed page is already open.`;
 
     const raw = await this.generateJson({
+      operation: 'interpret_screen',
       systemInstruction: AGENT_SYSTEM_PROMPT,
       prompt: userPrompt,
       screenshot: params.screenshot,
@@ -717,6 +762,7 @@ Respond with valid JSON only:
 }`;
 
     const raw = await this.generateJson({
+      operation: 'answer_screen_question',
       systemInstruction: SCREEN_QUESTION_SYSTEM_PROMPT,
       prompt,
       screenshot: params.screenshot,
@@ -764,6 +810,7 @@ Guidance:
 - Never mark send, submit, delete, purchase, publish, sign-out, authentication, or permissions actions as safeToAutoExecute.`;
 
     const raw = await this.generateJson({
+      operation: 'analyze_browser_rescue',
       systemInstruction: BROWSER_RESCUE_SYSTEM_PROMPT,
       prompt,
       screenshot: params.screenshot,
@@ -803,6 +850,7 @@ Guidance:
 - Use normalizedInstruction to preserve the task in short plain language.`;
 
     const raw = await this.generateTextJson({
+      operation: 'interpret_user_request',
       systemInstruction: USER_REQUEST_INTERPRETER_PROMPT,
       prompt,
       maxOutputTokens: 256,
@@ -846,6 +894,7 @@ Guidance:
 - If the task is blocked by the site or missing data, return status="blocked" with blockedReason.`;
 
     const raw = await this.generateTextJson({
+      operation: 'plan_complex_task',
       systemInstruction: COMPLEX_TASK_PLANNER_PROMPT,
       prompt,
       maxOutputTokens: 512,
@@ -872,6 +921,7 @@ Guidance:
   }
 
   private async generateJson(params: {
+    operation: string;
     systemInstruction: string;
     prompt: string;
     screenshot: string;
@@ -880,35 +930,58 @@ Guidance:
     fallback: Record<string, unknown>;
   }): Promise<Record<string, unknown>> {
     const genai = this.getDirectClient();
+    const startedAt = Date.now();
 
-    const result = await genai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              inlineData: {
-                mimeType: 'image/png',
-                data: params.screenshot,
+    try {
+      const result = await genai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                inlineData: {
+                  mimeType: 'image/png',
+                  data: params.screenshot,
+                },
               },
-            },
-            { text: params.prompt },
-          ],
+              { text: params.prompt },
+            ],
+          },
+        ],
+        config: {
+          systemInstruction: params.systemInstruction,
+          responseMimeType: 'application/json',
+          maxOutputTokens: params.maxOutputTokens,
+          temperature: params.temperature,
         },
-      ],
-      config: {
-        systemInstruction: params.systemInstruction,
-        responseMimeType: 'application/json',
-        maxOutputTokens: params.maxOutputTokens,
-        temperature: params.temperature,
-      },
-    });
+      });
 
-    return this.parseJsonResponse(result.text || '', params.fallback);
+      cloudLog('INFO', 'gemini_api_call', {
+        endpoint: 'direct',
+        operation: params.operation,
+        model: GEMINI_MODEL,
+        latencyMs: Date.now() - startedAt,
+        success: true,
+        usageMetadata: this.extractUsageMetadata(result),
+      });
+
+      return this.parseJsonResponse(result.text || '', params.fallback);
+    } catch (error) {
+      cloudLog('ERROR', 'gemini_api_call', {
+        endpoint: 'direct',
+        operation: params.operation,
+        model: GEMINI_MODEL,
+        latencyMs: Date.now() - startedAt,
+        success: false,
+        error: this.serializeError(error),
+      });
+      throw error;
+    }
   }
 
   private async generateTextJson(params: {
+    operation: string;
     systemInstruction: string;
     prompt: string;
     maxOutputTokens: number;
@@ -916,24 +989,80 @@ Guidance:
     fallback: Record<string, unknown>;
   }): Promise<Record<string, unknown>> {
     const genai = this.getDirectClient();
+    const startedAt = Date.now();
 
-    const result = await genai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: params.prompt }],
+    try {
+      const result = await genai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: params.prompt }],
+          },
+        ],
+        config: {
+          systemInstruction: params.systemInstruction,
+          responseMimeType: 'application/json',
+          maxOutputTokens: params.maxOutputTokens,
+          temperature: params.temperature,
         },
-      ],
-      config: {
-        systemInstruction: params.systemInstruction,
-        responseMimeType: 'application/json',
-        maxOutputTokens: params.maxOutputTokens,
-        temperature: params.temperature,
-      },
-    });
+      });
 
-    return this.parseJsonResponse(result.text || '', params.fallback);
+      cloudLog('INFO', 'gemini_api_call', {
+        endpoint: 'direct',
+        operation: params.operation,
+        model: GEMINI_MODEL,
+        latencyMs: Date.now() - startedAt,
+        success: true,
+        usageMetadata: this.extractUsageMetadata(result),
+      });
+
+      return this.parseJsonResponse(result.text || '', params.fallback);
+    } catch (error) {
+      cloudLog('ERROR', 'gemini_api_call', {
+        endpoint: 'direct',
+        operation: params.operation,
+        model: GEMINI_MODEL,
+        latencyMs: Date.now() - startedAt,
+        success: false,
+        error: this.serializeError(error),
+      });
+      throw error;
+    }
+  }
+
+  private extractUsageMetadata(result: { usageMetadata?: GeminiUsageMetadata }): Record<string, number> | null {
+    const usage = result.usageMetadata;
+    if (!usage) {
+      return null;
+    }
+
+    const metadata: Record<string, number> = {};
+
+    if (typeof usage.promptTokenCount === 'number') metadata.promptTokenCount = usage.promptTokenCount;
+    if (typeof usage.candidatesTokenCount === 'number') metadata.candidatesTokenCount = usage.candidatesTokenCount;
+    if (typeof usage.totalTokenCount === 'number') metadata.totalTokenCount = usage.totalTokenCount;
+    if (typeof usage.toolUsePromptTokenCount === 'number') metadata.toolUsePromptTokenCount = usage.toolUsePromptTokenCount;
+    if (typeof usage.thoughtsTokenCount === 'number') metadata.thoughtsTokenCount = usage.thoughtsTokenCount;
+    if (typeof usage.cachedContentTokenCount === 'number') metadata.cachedContentTokenCount = usage.cachedContentTokenCount;
+
+    return Object.keys(metadata).length > 0 ? metadata : null;
+  }
+
+  private serializeError(error: unknown): Record<string, string | null> {
+    if (error instanceof Error) {
+      return {
+        name: error.name,
+        message: error.message,
+        stack: error.stack || null,
+      };
+    }
+
+    return {
+      name: 'Error',
+      message: String(error),
+      stack: null,
+    };
   }
 
   private parseJsonResponse(text: string, fallback: Record<string, unknown>): Record<string, unknown> {

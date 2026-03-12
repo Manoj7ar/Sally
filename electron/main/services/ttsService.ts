@@ -2,6 +2,7 @@
 import { ipcMain } from 'electron';
 import { apiKeyManager } from '../managers/apiKeyManager.js';
 import { windowManager } from '../windowManager.js';
+import { cloudLog } from './cloudLogger.js';
 
 const VOICE_ID = 'EXAVITQu4vr4xnSDxMaL'; // Rachel - clear, calm
 const MODEL_ID = 'eleven_turbo_v2_5';
@@ -83,8 +84,15 @@ class TtsService {
 
   private async playText(text: string): Promise<void> {
     const apiKey = apiKeyManager.getElevenLabsKey();
+    const startedAt = Date.now();
     if (!apiKey) {
       console.warn('[TTS] No ElevenLabs API key configured');
+      cloudLog('WARNING', 'tts_request', {
+        textLength: text.length,
+        latencyMs: Date.now() - startedAt,
+        success: false,
+        reason: 'missing_api_key',
+      });
       return;
     }
 
@@ -109,6 +117,13 @@ class TtsService {
       if (!response.ok) {
         const errorText = await response.text();
         console.error('[TTS] ElevenLabs API error:', response.status, errorText);
+        cloudLog('ERROR', 'tts_request', {
+          textLength: text.length,
+          latencyMs: Date.now() - startedAt,
+          success: false,
+          statusCode: response.status,
+          error: errorText,
+        });
         return;
       }
 
@@ -139,8 +154,21 @@ class TtsService {
           }
         }, PLAYBACK_TIMEOUT_MS);
       });
+      cloudLog('INFO', 'tts_request', {
+        textLength: text.length,
+        latencyMs: Date.now() - startedAt,
+        success: true,
+        voiceId: VOICE_ID,
+        modelId: MODEL_ID,
+      });
     } catch (error) {
       console.error('[TTS] Failed to synthesize speech:', error);
+      cloudLog('ERROR', 'tts_request', {
+        textLength: text.length,
+        latencyMs: Date.now() - startedAt,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

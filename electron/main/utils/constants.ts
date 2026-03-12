@@ -34,4 +34,5 @@ export const STORE_KEYS = {
   GEMINI_API_KEY: 'geminiApiKey',
   GEMINI_BACKEND_URL: 'geminiBackendUrl',
   AUTO_RESEARCH_SCREEN_QUESTIONS: 'autoResearchScreenQuestions',
+  CLOUD_LOGGING_ENABLED: 'cloudLoggingEnabled',
 } as const;
