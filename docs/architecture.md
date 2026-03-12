@@ -2,7 +2,7 @@
 
 > **Gemini Live Agent Challenge 2026 | UI Navigator Track | Accessibility Focus**
 >
-> *"The AI assistant that sees, understands, and acts — so you don't have to click."*
+> *"The AI assistant that sees, understands, and acts, so you don't have to click."*
 >
 > Sally lets people with motor impairments, RSI, cognitive disabilities, or anyone who wants hands-free web control use websites with just their voice. It combines Gemini's multimodal vision, push-to-talk input, a persistent Electron-owned browser with DOM access, and ElevenLabs neural TTS in a single, continuous control loop.
 
