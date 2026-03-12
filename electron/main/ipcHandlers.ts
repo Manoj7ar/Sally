@@ -14,7 +14,6 @@ export function registerIpcHandlers(): void {
       provider: apiKeyManager.getProvider(),
       hasProviderKey: apiKeyManager.hasApiKey(),
       hasElevenLabsKey: apiKeyManager.hasElevenLabsKey(),
-      hasWhisperKey: apiKeyManager.hasWhisperKey(),
       hasGeminiKey: apiKeyManager.hasGeminiApiKey(),
       geminiBackendUrl: apiKeyManager.getGeminiBackendUrl(),
       autoResearchScreenQuestions: apiKeyManager.getAutoResearchScreenQuestions(),
@@ -48,14 +47,6 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('sally:get-elevenlabs-key-status', () => {
     return apiKeyManager.hasElevenLabsKey();
-  });
-
-  ipcMain.handle('sally:set-whisper-key', (_e, key: string) => {
-    apiKeyManager.setWhisperKey(key);
-  });
-
-  ipcMain.handle('sally:get-whisper-key-status', () => {
-    return apiKeyManager.hasWhisperKey();
   });
 
   ipcMain.handle('sally:set-gemini-key', (_e, key: string) => {

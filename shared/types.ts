@@ -34,7 +34,6 @@ export interface SallyConfig {
   provider: SallyProvider;
   hasProviderKey: boolean;
   hasElevenLabsKey: boolean;
-  hasWhisperKey: boolean;
   hasGeminiKey: boolean;
   geminiBackendUrl: string;
   autoResearchScreenQuestions: boolean;
@@ -57,8 +56,6 @@ export interface IpcChannels {
   'sally:clear-api-key': { request: void; response: void; broadcast: never };
   'sally:set-elevenlabs-key': { request: string; response: void; broadcast: never };
   'sally:get-elevenlabs-key-status': { request: void; response: boolean; broadcast: never };
-  'sally:set-whisper-key': { request: string; response: void; broadcast: never };
-  'sally:get-whisper-key-status': { request: void; response: boolean; broadcast: never };
   'sally:set-gemini-key': { request: string; response: void; broadcast: never };
   'sally:get-gemini-key-status': { request: void; response: boolean; broadcast: never };
   'sally:set-gemini-backend-url': { request: string; response: void; broadcast: never };

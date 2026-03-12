@@ -11,9 +11,7 @@ interface StoreSchema {
   };
   [STORE_KEYS.AUDIO_DEVICE]: string;
   [STORE_KEYS.ANTHROPIC_API_KEY_ENCRYPTED]: string;
-  [STORE_KEYS.OPENAI_API_KEY_ENCRYPTED]: string;
   [STORE_KEYS.ELEVENLABS_API_KEY]: string;
-  [STORE_KEYS.WHISPER_API_KEY]: string;
   [STORE_KEYS.PROVIDER]: string;
   [STORE_KEYS.SOUND_EFFECTS_ENABLED]: boolean;
   [STORE_KEYS.MIC_MUTED]: boolean;
@@ -27,9 +25,7 @@ const defaultValues: StoreSchema = {
   [STORE_KEYS.WINDOW_STATE]: {},
   [STORE_KEYS.AUDIO_DEVICE]: 'default',
   [STORE_KEYS.ANTHROPIC_API_KEY_ENCRYPTED]: '',
-  [STORE_KEYS.OPENAI_API_KEY_ENCRYPTED]: '',
   [STORE_KEYS.ELEVENLABS_API_KEY]: '',
-  [STORE_KEYS.WHISPER_API_KEY]: '',
   [STORE_KEYS.PROVIDER]: 'gemini',
   [STORE_KEYS.SOUND_EFFECTS_ENABLED]: true,
   [STORE_KEYS.MIC_MUTED]: false,
@@ -38,6 +34,8 @@ const defaultValues: StoreSchema = {
   [STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS]: false,
   [STORE_KEYS.CLOUD_LOGGING_ENABLED]: true,
 };
+
+const LEGACY_STORE_KEYS = ['openaiApiKeyEncrypted', 'whisperApiKey'] as const;
 
 function getStoreFilePath(): string | null {
   try {
@@ -78,9 +76,26 @@ function repairStoreConfig(): void {
   }
 
   try {
-    JSON.parse(sanitized);
+    const parsed = JSON.parse(sanitized) as unknown;
+
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      let removedLegacyKeys = false;
+      const config = parsed as Record<string, unknown>;
+      for (const key of LEGACY_STORE_KEYS) {
+        if (key in config) {
+          delete config[key];
+          removedLegacyKeys = true;
+        }
+      }
+
+      if (removedLegacyKeys) {
+        sanitized = JSON.stringify(config, null, 2);
+        changed = true;
+        console.warn('[Store] Removed legacy OpenAI/Whisper keys from config.');
+      }
+    }
+
     if (changed) {
-      console.warn('[Store] Removed UTF-8 BOM from config before store initialization.');
       fs.writeFileSync(configPath, `${sanitized.trim()}\n`, 'utf8');
     }
     return;

@@ -1,4 +1,4 @@
-// Audio transcription service - Gemini 2.5 Flash (primary) or OpenAI Whisper (fallback)
+// Audio transcription service - Gemini 2.5 Flash transcription and command recovery
 import { apiKeyManager } from '../managers/apiKeyManager.js';
 import { GEMINI_MODEL } from '../utils/constants.js';
 
@@ -173,7 +173,7 @@ export type TranscriptionIntent =
   | 'none';
 
 export type TranscriptionConfidence = 'high' | 'low';
-export type TranscriptionSource = 'gemini' | 'whisper' | 'recovery';
+export type TranscriptionSource = 'gemini' | 'recovery';
 
 export interface TranscriptionResult {
   transcript: string;
@@ -189,46 +189,19 @@ interface RecoveryIntentResponse {
   confidence?: string;
 }
 
-class WhisperService {
+class TranscriptionService {
   async transcribe(
     audioBase64: string,
     mimeType: string,
     options: { durationMs?: number; isPreview?: boolean } = {},
   ): Promise<TranscriptionResult> {
     const geminiKey = apiKeyManager.getGeminiApiKey();
-    const whisperKey = apiKeyManager.getWhisperKey();
-    let transcript = '';
-    let source: TranscriptionSource = 'gemini';
-
-    if (geminiKey) {
-      try {
-        transcript = await this.transcribeWithGemini(audioBase64, mimeType, geminiKey, options);
-        source = 'gemini';
-      } catch (error) {
-        console.warn('[Transcription] Gemini failed, falling back to Whisper:', error);
-        if (whisperKey) {
-          transcript = await this.transcribeWithWhisper(audioBase64, mimeType, whisperKey, options);
-          source = 'whisper';
-        } else {
-          throw error;
-        }
-      }
-    } else if (whisperKey) {
-      try {
-        transcript = await this.transcribeWithWhisper(audioBase64, mimeType, whisperKey, options);
-        source = 'whisper';
-      } catch (error) {
-        console.warn('[Transcription] Whisper failed, falling back to Gemini:', error);
-        if (geminiKey) {
-          transcript = await this.transcribeWithGemini(audioBase64, mimeType, geminiKey, options);
-          source = 'gemini';
-        } else {
-          throw error;
-        }
-      }
-    } else {
-      throw new Error('No transcription API key configured. Set a Gemini or OpenAI key in settings.');
+    if (!geminiKey) {
+      throw new Error('No transcription API key configured. Set a Gemini key in settings.');
     }
+
+    const transcript = await this.transcribeWithGemini(audioBase64, mimeType, geminiKey, options);
+    const source: TranscriptionSource = 'gemini';
 
     const firstPass = this.buildTranscriptionResult(transcript, source);
 
@@ -624,55 +597,6 @@ class WhisperService {
     return text;
   }
 
-  private async transcribeWithWhisper(
-    audioBase64: string,
-    mimeType: string,
-    apiKey: string,
-    options: { durationMs?: number; isPreview?: boolean },
-  ): Promise<string> {
-    const audioBuffer = Buffer.from(audioBase64, 'base64');
-    const ext = mimeType.includes('webm') ? 'webm' : mimeType.includes('mp4') ? 'mp4' : 'wav';
-    const boundary = '----SallyFormBoundary' + Date.now();
-    const parts: Buffer[] = [];
-
-    parts.push(Buffer.from(
-      `--${boundary}\r\n`
-      + `Content-Disposition: form-data; name="file"; filename="audio.${ext}"\r\n`
-      + `Content-Type: ${mimeType}\r\n\r\n`,
-    ));
-    parts.push(audioBuffer);
-    parts.push(Buffer.from('\r\n'));
-
-    parts.push(Buffer.from(
-      `--${boundary}\r\n`
-      + 'Content-Disposition: form-data; name="model"\r\n\r\n'
-      + 'whisper-1\r\n',
-    ));
-
-    parts.push(Buffer.from(`--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      },
-      body,
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Whisper API error: ${response.status} - ${errorText}`);
-    }
-
-    const result = await response.json() as { text: string };
-    const text = this.sanitizeTranscript(result.text, options);
-    console.log('[Transcription] Whisper result:', text);
-    return text;
-  }
-
   private async classifyIntentWithGemini(
     audioBase64: string,
     mimeType: string,
@@ -835,4 +759,4 @@ class WhisperService {
   }
 }
 
-export const whisperService = new WhisperService();
+export const transcriptionService = new TranscriptionService();

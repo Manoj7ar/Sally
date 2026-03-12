@@ -1,6 +1,6 @@
 // Session manager - orchestrates voice -> transcribe -> Electron browser + Gemini agentic loop -> TTS
 import { windowManager } from '../windowManager.js';
-import { whisperService } from '../services/whisperService.js';
+import { transcriptionService } from '../services/transcriptionService.js';
 import { ttsService } from '../services/ttsService.js';
 import { geminiService } from '../services/geminiService.js';
 import { screenshotService } from '../services/screenshotService.js';
@@ -16,7 +16,7 @@ import type {
   GeminiUserRequestIntent,
   RecentUserTurn,
 } from '../services/geminiService.js';
-import type { TranscriptionResult } from '../services/whisperService.js';
+import type { TranscriptionResult } from '../services/transcriptionService.js';
 import type { BrowserSnapshot, PageContextElement } from '../services/pageContext.js';
 import type { SallyState } from '../../../shared/types.js';
 
@@ -2510,18 +2510,18 @@ class SessionManager {
         return '';
       }
 
-      if (!apiKeyManager.hasGeminiApiKey() && !apiKeyManager.hasWhisperKey()) {
+      if (!apiKeyManager.hasGeminiApiKey()) {
         if (!this.isRunCurrent(runId)) {
           return '';
         }
-        ttsService.speakImmediate('Please configure a Gemini API key or OpenAI Whisper key in settings for speech transcription.');
+        ttsService.speakImmediate('Please configure a Gemini API key in settings for speech transcription.');
         if (this.isRunCurrent(runId)) {
           this.setState('idle');
         }
         return '';
       }
 
-      const transcription = await whisperService.transcribe(audioBase64, mimeType, { durationMs });
+      const transcription = await transcriptionService.transcribe(audioBase64, mimeType, { durationMs });
       if (!this.isRunCurrent(runId)) {
         return '';
       }
@@ -2845,11 +2845,11 @@ class SessionManager {
 
   async previewTranscription(audioBase64: string, mimeType: string, durationMs?: number): Promise<string> {
     try {
-      if (!apiKeyManager.hasGeminiApiKey() && !apiKeyManager.hasWhisperKey()) {
+      if (!apiKeyManager.hasGeminiApiKey()) {
         return '';
       }
 
-      const transcription = await whisperService.transcribe(audioBase64, mimeType, { durationMs, isPreview: true });
+      const transcription = await transcriptionService.transcribe(audioBase64, mimeType, { durationMs, isPreview: true });
       const previewText = transcription.transcript.trim();
       if (previewText) {
         console.log('[SessionManager] Live preview transcription:', previewText);

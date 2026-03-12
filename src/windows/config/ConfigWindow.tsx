@@ -184,7 +184,6 @@ export default function ConfigWindow() {
   const [config, setConfig] = useState<SallyConfig | null>(null);
   const [providerKey, setProviderKey] = useState('');
   const [elevenLabsKey, setElevenLabsKey] = useState('');
-  const [whisperKey, setWhisperKey] = useState('');
   const [geminiBackendUrl, setGeminiBackendUrl] = useState('');
   const [autoResearchScreenQuestions, setAutoResearchScreenQuestions] = useState(false);
   const [backendHealth, setBackendHealth] = useState<{
@@ -264,13 +263,6 @@ export default function ConfigWindow() {
     if (!elevenLabsKey) return;
     await ipc.invoke('sally:set-elevenlabs-key', elevenLabsKey);
     setElevenLabsKey('');
-    loadConfig();
-  };
-
-  const handleSaveWhisperKey = async () => {
-    if (!whisperKey) return;
-    await ipc.invoke('sally:set-whisper-key', whisperKey);
-    setWhisperKey('');
     loadConfig();
   };
 
@@ -444,32 +436,20 @@ export default function ConfigWindow() {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ fontSize: 13, fontWeight: 500, color: '#1a1a1e' }}>Speech-to-Text</span>
-              <span style={{ fontSize: 11, color: '#6B7280' }}>Gemini 2.5 Flash with optional OpenAI Whisper fallback</span>
+              <span style={{ fontSize: 11, color: '#6B7280' }}>Gemini 2.5 Flash</span>
               <span
                 style={{
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  background: (config.hasGeminiKey || config.hasWhisperKey) ? '#22C55E' : '#D1D5DB',
+                  background: config.hasGeminiKey ? '#22C55E' : '#D1D5DB',
                   marginLeft: 'auto',
                 }}
               />
             </div>
             <p style={{ fontSize: 12, color: '#6B7280', margin: '0 0 10px 0' }}>
-              Gemini handles transcription by default. Add an OpenAI API key only if you want Whisper as a fallback when Gemini transcription fails.
+              Speech-to-text uses the Gemini API key configured above.
             </p>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <div style={{ flex: 1 }}>
-                <KeyInput
-                  value={whisperKey}
-                  onChange={setWhisperKey}
-                  placeholder={config.hasWhisperKey ? 'Whisper fallback key configured' : 'Enter OpenAI key for Whisper fallback...'}
-                />
-              </div>
-              <PrimaryButton onClick={handleSaveWhisperKey} disabled={!whisperKey}>
-                Save
-              </PrimaryButton>
-            </div>
           </div>
         </Card>
 

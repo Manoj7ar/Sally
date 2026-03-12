@@ -1,4 +1,4 @@
-// API Key manager - BYOK storage for provider, ElevenLabs, and Whisper keys
+// API Key manager - BYOK storage for provider, Gemini, and ElevenLabs keys
 import { store, STORE_KEYS } from '../utils/store.js';
 import type { SallyProvider } from '../../../shared/types.js';
 
@@ -23,26 +23,6 @@ class ApiKeyManager {
     store.set(STORE_KEYS.ANTHROPIC_API_KEY_ENCRYPTED, '');
   }
 
-  // ============ OPENAI API KEY ============
-
-  setOpenAIApiKey(key: string): void {
-    store.set(STORE_KEYS.OPENAI_API_KEY_ENCRYPTED, key);
-  }
-
-  getOpenAIApiKey(): string | null {
-    const value = store.get(STORE_KEYS.OPENAI_API_KEY_ENCRYPTED);
-    return value || null;
-  }
-
-  hasOpenAIApiKey(): boolean {
-    const value = store.get(STORE_KEYS.OPENAI_API_KEY_ENCRYPTED);
-    return !!value && value.length > 0;
-  }
-
-  clearOpenAIApiKey(): void {
-    store.set(STORE_KEYS.OPENAI_API_KEY_ENCRYPTED, '');
-  }
-
   // ============ ELEVENLABS API KEY ============
 
   setElevenLabsKey(key: string): void {
@@ -56,22 +36,6 @@ class ApiKeyManager {
 
   hasElevenLabsKey(): boolean {
     const value = store.get(STORE_KEYS.ELEVENLABS_API_KEY);
-    return !!value && value.length > 0;
-  }
-
-  // ============ WHISPER API KEY ============
-
-  setWhisperKey(key: string): void {
-    store.set(STORE_KEYS.WHISPER_API_KEY, key);
-  }
-
-  getWhisperKey(): string | null {
-    const value = store.get(STORE_KEYS.WHISPER_API_KEY);
-    return value || null;
-  }
-
-  hasWhisperKey(): boolean {
-    const value = store.get(STORE_KEYS.WHISPER_API_KEY);
     return !!value && value.length > 0;
   }
 

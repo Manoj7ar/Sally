@@ -122,8 +122,7 @@ This is the core idea behind Sally: screenshot understanding plus direct UI cont
 | **Electron Shell** | Electron | Desktop host, windows, IPC, session lifecycle |
 | **Hotkey Manager** | `uiohook-napi` | Global push-to-talk hotkey |
 | **Audio Recorder** | Web Audio API | Captures mic audio as WebM/Opus |
-| **Gemini STT** | Gemini 2.5 Flash | Default transcription and command recovery |
-| **Whisper Fallback** | OpenAI Whisper | Optional backup STT path |
+| **Gemini STT** | Gemini 2.5 Flash | Transcription and command recovery |
 | **Screenshot Service** | Electron `desktopCapturer` | Full-screen screenshot capture for desktop questions |
 | **Browser Service** | Electron `BrowserWindow` + `webContents` | Persistent Sally browser, screenshots, DOM extraction, DOM-first actions |
 | **Page Context Extractor** | Injected DOM scripts | Builds control inventory, headings, landmarks, dialogs, messages |
@@ -412,7 +411,7 @@ If either gate is off, Sally falls back to local console logging and the user-fa
 │  services/                                  │
 │    browserService.ts    - Sally browser     │
 │    geminiService.ts     - Gemini calls      │
-│    whisperService.ts    - STT + recovery    │
+│    transcriptionService.ts - STT + recovery │
 │    ttsService.ts        - ElevenLabs TTS    │
 │    screenshotService.ts - desktop capture   │
 │    pageContext.ts       - DOM extraction    │
@@ -531,7 +530,6 @@ Those commands use the current browser snapshot without asking Gemini to plan a 
 | `sally:set-gemini-backend-url` | Save backend URL |
 | `sally:get-elevenlabs-key-status` | Check ElevenLabs key presence |
 | `sally:get-gemini-key-status` | Check Gemini key presence |
-| `sally:get-whisper-key-status` | Check Whisper fallback key presence |
 | `sally:get-audio-device` | Get selected input device |
 | `sally:set-audio-device` | Set selected input device |
 | `sally:get-mic-muted` | Get mic mute state |
@@ -607,7 +605,6 @@ Sally is a Gemini-first app.
 | Vision + browser planning | **Gemini 2.5 Flash** |
 | Screen questions and summaries | **Gemini 2.5 Flash** |
 | Default speech-to-text | **Gemini 2.5 Flash** |
-| Optional transcription fallback | **OpenAI Whisper** |
 | Text-to-speech | **ElevenLabs** |
 
 ### Why Gemini-first matters
@@ -765,7 +762,7 @@ electron/
 │   │   ├── browserService.ts       # Persistent Sally browser + DOM actions
 │   │   ├── pageContext.ts          # DOM and semantic extraction
 │   │   ├── geminiService.ts        # Browser planning + screen Q&A
-│   │   ├── whisperService.ts       # STT and command classification
+│   │   ├── transcriptionService.ts # STT and command classification
 │   │   ├── ttsService.ts           # ElevenLabs speech
 │   │   └── screenshotService.ts    # Desktop screenshot capture
 │   └── utils/

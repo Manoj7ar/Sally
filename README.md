@@ -54,7 +54,7 @@ This means Sally can handle multi-step tasks like "go to Gmail and open compose"
 ## Voice Flow
 
 1. **User speaks** — Global push-to-talk hotkey (Right Alt, or Right Option on macOS) captures audio system-wide
-2. **Gemini transcribes** — Audio sent to Gemini 2.5 Flash for speech-to-text by default (no OpenAI dependency required)
+2. **Gemini transcribes** — Audio sent to Gemini 2.5 Flash for speech-to-text
 3. **Intent routes** — Sally decides whether the request is screen-only, visual Q&A, browser assistive help, or a browser control task
 4. **Gemini sees** — Sally sends either a desktop screenshot or a browser screenshot plus page context to Gemini 2.5 Flash
 5. **Sally acts** — The Sally browser executes DOM-first actions based on Gemini's action plan
@@ -133,7 +133,7 @@ Sally also has an optional structured logging path for hackathon demos:
 - **Multi-step task completion** — Handles complex tasks autonomously across multiple pages
 - **Optional Cloud Logging integration** — Backend and desktop activity can flow into Google Cloud Logging at deploy time without changing local behavior
 - **Floating assistant bar** — Minimal, non-intrusive UI with live state feedback
-- **Configurable settings** — Manage Gemini, Whisper fallback, backend URL, auto research, and audio from the settings window
+- **Configurable settings** — Manage Gemini, ElevenLabs, backend URL, auto research, and audio from the settings window
 
 ## Getting Started
 
@@ -142,9 +142,8 @@ Sally also has an optional structured logging path for hackathon demos:
 For the full platform, use Node.js 20+.
 
 You'll need API keys for:
-- Gemini is required for vision, browser automation, screen questions, and the default speech-to-text path.
+- Gemini is required for vision, browser automation, screen questions, and speech-to-text.
 - ElevenLabs is required for text-to-speech.
-- OpenAI is optional and only used for Whisper fallback transcription.
 
 ### Desktop App
 
@@ -164,7 +163,6 @@ On Windows PowerShell, use `Copy-Item .env.example .env` instead of `cp`.
 
 ```bash
 cp .env.example .env
-# Optional: add OPENAI_API_KEY if you want Whisper fallback
 # Edit .env with your API keys
 ```
 
@@ -281,7 +279,7 @@ cd sally
 npm install
 npm run verify:desktop
 
-# 2. Configure API keys (Gemini + ElevenLabs required, OpenAI optional for Whisper fallback)
+# 2. Configure API keys (Gemini + ElevenLabs required)
 
 # Option A: Environment file
 cp .env.example .env
@@ -365,7 +363,7 @@ Verifies: Text-based instruction path
 | "Gemini API key" error | Add a key in Settings > AI Model > Gemini API Key, or configure the Sally Vision Backend URL |
 | Hotkey not working | Restart the app; on macOS grant Accessibility permission |
 
-Settings note: the current desktop UI exposes Gemini under `AI Model`, with an optional Whisper fallback key in the Voice section and an auto research toggle for screen questions.
+Settings note: the current desktop UI exposes Gemini under `AI Model`, with the Voice section covering ElevenLabs and Gemini speech-to-text status plus an auto research toggle for screen questions.
 
 For a full repo health check, run `npm run check`.
 
@@ -379,7 +377,7 @@ For a full repo health check, run `npm run check`.
 | **Browser** | **Electron BrowserWindow + webContents** | Persistent Sally browser and DOM-first browser control |
 | **Desktop** | Electron + React + TypeScript | Cross-platform desktop app |
 | **Build** | Vite | Fast frontend bundling |
-| **STT** | **Gemini 2.5 Flash** | Speech-to-text transcription with optional OpenAI Whisper fallback |
+| **STT** | **Gemini 2.5 Flash** | Speech-to-text transcription |
 | **TTS** | ElevenLabs | Neural text-to-speech |
 | **Hotkey** | uiohook-napi | Global push-to-talk |
 
@@ -399,7 +397,7 @@ Current repo layout after cleanup:
 .
 ├── electron/              # Electron main process
 │   └── main/
-│       ├── services/      # TTS, Whisper, Gemini, browser, screenshot services
+│       ├── services/      # Transcription, TTS, Gemini, browser, screenshot services
 │       ├── managers/      # API keys, session management, microphone
 │       └── utils/         # Constants, store
 ├── src/                   # Desktop renderer UI (React)
