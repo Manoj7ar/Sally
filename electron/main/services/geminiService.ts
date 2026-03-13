@@ -96,6 +96,11 @@ export interface GeminiTaskPlan {
   blockedReason: string | null;
 }
 
+export interface GeminiEmailDraft {
+  subject: string;
+  body: string;
+}
+
 interface InterpretParams {
   screenshot: string;
   instruction: string;
@@ -163,6 +168,12 @@ interface PlanComplexTaskParams {
   tabs?: BrowserTabInfo[];
   activeTabId?: string | null;
   triggerReason?: string | null;
+}
+
+interface GenerateEmailDraftParams {
+  goal: string;
+  recipientEmail: string;
+  brief: string;
 }
 
 interface GeminiUsageMetadata {
@@ -257,6 +268,23 @@ Rules:
 - Do not guess a person's identity if the screenshot alone is not enough.
 - If auto-research is disabled, always return shouldResearch=false.
 - If auto-research is enabled, only return shouldResearch=true when the user clearly wants more information beyond what is visible and you can form a safe, specific search query from visible names, labels, or text.`;
+
+const EMAIL_DRAFT_SYSTEM_PROMPT = `You write complete plain-text emails for Sally.
+
+Return valid JSON only with this exact shape:
+{
+  "subject": "short subject line",
+  "body": "plain-text email body"
+}
+
+Rules:
+- Expand the user's short brief into a complete email.
+- Infer tone from the brief. Use a casual tone for informal topics like invitations, parties, and friendly updates. Use a professional tone for formal or work-related topics.
+- Write a real email with a greeting, 2 or 3 short paragraphs when helpful, and a closing.
+- Keep the email concise but complete.
+- Do not use markdown, bullets, placeholders, or brackets unless the user explicitly asked for them.
+- Preserve important facts from the brief such as dates, times, locations, and purpose.
+- If the brief is sparse, make reasonable assumptions without inventing sensitive facts.`;
 
 const BROWSER_RESCUE_SYSTEM_PROMPT = `You are Sally's browser rescue analyzer.
 
@@ -391,6 +419,14 @@ class GeminiService {
     );
   }
 
+  async generateEmailDraft(params: GenerateEmailDraftParams): Promise<GeminiEmailDraft> {
+    return this.withBackendFallback(
+      'generate_email_draft',
+      (backendUrl) => this.generateEmailDraftWithBackend(backendUrl, params),
+      () => this.generateEmailDraftDirect(params),
+    );
+  }
+
   private async withBackendFallback<T>(
     operation: string,
     backendCall: (backendUrl: string) => Promise<T>,
@@ -461,6 +497,14 @@ class GeminiService {
   ): Promise<GeminiTaskPlan> {
     const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/plan-complex-task', params);
     return this.normalizeTaskPlan(raw, params.goal);
+  }
+
+  private async generateEmailDraftWithBackend(
+    backendUrl: string,
+    params: GenerateEmailDraftParams,
+  ): Promise<GeminiEmailDraft> {
+    const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/generate-email-draft', params);
+    return this.normalizeEmailDraft(raw, params.brief);
   }
 
   private async postToBackend<T>(backendUrl: string, route: string, body: object): Promise<T> {
@@ -920,6 +964,38 @@ Guidance:
     return this.normalizeTaskPlan(raw, params.goal);
   }
 
+  private async generateEmailDraftDirect(params: GenerateEmailDraftParams): Promise<GeminiEmailDraft> {
+    const prompt = `Email task:
+- Goal: ${params.goal}
+- Recipient: ${params.recipientEmail}
+- User brief: ${params.brief}
+
+Respond with valid JSON only.
+
+Guidance:
+- Write a polished email Sally can paste directly into Gmail.
+- Generate a concise subject line.
+- Use plain text only.
+- Keep the body ready to send without further editing.
+- Include a natural greeting and sign-off.
+- When the brief mentions a date, keep it in the email.
+- Do not mention that an AI wrote the email.`;
+
+    const raw = await this.generateTextJson({
+      operation: 'generate_email_draft',
+      systemInstruction: EMAIL_DRAFT_SYSTEM_PROMPT,
+      prompt,
+      maxOutputTokens: 512,
+      temperature: 0.4,
+      fallback: {
+        subject: 'Quick follow-up',
+        body: 'Hi,\n\nI wanted to follow up with you.\n\nBest,\nManoj',
+      },
+    });
+
+    return this.normalizeEmailDraft(raw, params.brief);
+  }
+
   private async generateJson(params: {
     operation: string;
     systemInstruction: string;
@@ -1298,6 +1374,21 @@ Guidance:
       clarificationQuestion,
       completionNarration,
       blockedReason,
+    };
+  }
+
+  private normalizeEmailDraft(raw: Record<string, unknown>, brief: string): GeminiEmailDraft {
+    const subject = typeof raw.subject === 'string' && raw.subject.trim()
+      ? raw.subject.trim()
+      : 'Quick follow-up';
+    const fallbackBody = `Hi,\n\n${brief.trim() || 'I wanted to follow up with you.'}\n\nBest,\nManoj`;
+    const body = typeof raw.body === 'string' && raw.body.trim()
+      ? raw.body.trim()
+      : fallbackBody;
+
+    return {
+      subject,
+      body,
     };
   }
 

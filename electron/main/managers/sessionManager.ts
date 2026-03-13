@@ -59,6 +59,7 @@ interface ComplexTaskContext {
   currentRunId: number;
   recentActions: Array<{ fingerprint: string; pageUrl: string; pageTitle: string }>;
   autoRescueUsed: boolean;
+  guidedEmailState: GuidedEmailState | null;
 }
 
 interface PendingRiskyAction {
@@ -66,6 +67,28 @@ interface PendingRiskyAction {
   prompt: string;
   descriptor: string;
   autoListenAttempts: number;
+}
+
+interface GuidedEmailState {
+  recipientNeedsConfirmation: boolean;
+  recipientConfirmed: boolean;
+  continuePrompted: boolean;
+  continueConfirmed: boolean;
+  briefPrompted: boolean;
+  sendPrompted: boolean;
+  userBrief: string | null;
+  draftSubject: string | null;
+  draftBody: string | null;
+}
+
+type GuidedEmailPromptKind = 'recipient' | 'continue' | 'brief' | 'send';
+
+interface PendingGuidedEmailPrompt {
+  kind: GuidedEmailPromptKind;
+  prompt: string;
+  reprompt: string;
+  autoListenAttempts: number;
+  action?: GeminiAction;
 }
 
 const DESCRIBE_COMMANDS = [
@@ -322,6 +345,7 @@ const MAX_TASK_MEMORY = 12;
 const REPLAN_ACTION_INTERVAL = 5;
 const REPLAN_FAILURE_THRESHOLD = 2;
 const ACTION_TARGET_PREVIEW_MS = 600;
+const GUIDED_EMAIL_ACTION_TARGET_PREVIEW_MS = 320;
 const GENERIC_CHAT_RESPONSE = 'I can help you browse, describe what is on screen, answer screen questions, and walk through page controls.';
 const GENERIC_CLARIFICATION_RESPONSE = 'What would you like me to do?';
 const AFFIRMATIVE_CONFIRMATION_PATTERN = /\b(yes|yeah|yep|sure|go ahead|confirm|do it|send it|submit it|continue|proceed|okay)\b/i;
@@ -346,6 +370,7 @@ class SessionManager {
   private currentTask: ComplexTaskContext | null = null;
   private sessionWorkingMemory: string[] = [];
   private pendingRiskyAction: PendingRiskyAction | null = null;
+  private pendingGuidedEmailPrompt: PendingGuidedEmailPrompt | null = null;
 
   initialize(): void {
     console.log('[SessionManager] Initialized (Electron browser + Gemini agentic mode)');
@@ -469,7 +494,103 @@ class SessionManager {
     return `Browser workflow:\n${formattedClauses.join('\n')}`;
   }
 
+  private normalizeEmailCandidate(email: string): string {
+    return email.trim().replace(/[>,.;!?]+$/g, '').toLowerCase();
+  }
+
+  private extractRecipientEmailCandidate(goal: string): { email: string | null; needsConfirmation: boolean } {
+    const directMatch = goal.match(EMAIL_ADDRESS_PATTERN)?.[0];
+    if (directMatch) {
+      const email = this.normalizeEmailCandidate(directMatch);
+      return {
+        email,
+        needsConfirmation: this.isSuspiciousRecipientEmail(email),
+      };
+    }
+
+    const spokenNormalized = goal
+      .toLowerCase()
+      .replace(/\b(?:at)\b/g, '@')
+      .replace(/\b(?:dot|period)\b/g, '.')
+      .replace(/\b(?:underscore)\b/g, '_')
+      .replace(/\b(?:dash|hyphen)\b/g, '-')
+      .replace(/\b(?:plus)\b/g, '+')
+      .replace(/\s*@\s*/g, '@')
+      .replace(/\s*\.\s*/g, '.')
+      .replace(/\s*\+\s*/g, '+')
+      .replace(/\s*-\s*/g, '-')
+      .replace(/\s*_\s*/g, '_');
+    const spokenMatch = spokenNormalized.match(EMAIL_ADDRESS_PATTERN)?.[0];
+    if (!spokenMatch) {
+      return { email: null, needsConfirmation: false };
+    }
+
+    return {
+      email: this.normalizeEmailCandidate(spokenMatch),
+      needsConfirmation: true,
+    };
+  }
+
+  private isSuspiciousRecipientEmail(email: string): boolean {
+    const [localPart = '', domain = ''] = email.split('@');
+    const domainParts = domain.split('.').filter(Boolean);
+    return (
+      localPart.length < 3
+      || domainParts.length < 2
+      || domainParts.some((part) => part.length < 2)
+      || /[._%+-]{2,}/.test(email)
+    );
+  }
+
+  private isGuidedEmailComposeGoal(goal: string): boolean {
+    const recipient = this.extractRecipientEmailCandidate(goal);
+    const normalized = this.normalizeLooseText(goal);
+    return Boolean(recipient.email)
+      && /\b(compose|draft|write|email)\b/i.test(normalized)
+      && !/\b(linkedin page|official website|company website|remember key facts)\b/i.test(normalized);
+  }
+
+  private createGuidedEmailState(goal: string): GuidedEmailState | null {
+    if (!this.isGuidedEmailComposeGoal(goal)) {
+      return null;
+    }
+
+    const recipient = this.extractRecipientEmailCandidate(goal);
+    return {
+      recipientNeedsConfirmation: recipient.needsConfirmation,
+      recipientConfirmed: !recipient.needsConfirmation,
+      continuePrompted: false,
+      continueConfirmed: false,
+      briefPrompted: false,
+      sendPrompted: false,
+      userBrief: null,
+      draftSubject: null,
+      draftBody: null,
+    };
+  }
+
+  private buildGuidedEmailSubtasks(goal: string): GeminiTaskSubtask[] | null {
+    if (!this.isGuidedEmailComposeGoal(goal)) {
+      return null;
+    }
+
+    const recipientEmail = this.extractRecipientEmailCandidate(goal).email || 'the requested recipient';
+    return [
+      { id: 's1', title: 'Open Gmail', status: 'active' },
+      { id: 's2', title: 'Click Compose', status: 'pending' },
+      { id: 's3', title: `Address the draft to ${recipientEmail}`, status: 'pending' },
+      { id: 's4', title: 'Ask whether to continue', status: 'pending' },
+      { id: 's5', title: 'Draft the email content', status: 'pending' },
+      { id: 's6', title: 'Ask whether to send it', status: 'pending' },
+    ];
+  }
+
   private buildHeuristicSubtasks(goal: string): GeminiTaskSubtask[] {
+    const guidedEmailSubtasks = this.buildGuidedEmailSubtasks(goal);
+    if (guidedEmailSubtasks) {
+      return guidedEmailSubtasks;
+    }
+
     const trimmedGoal = goal.trim();
     const formatted = /^Browser workflow:\s*/i.test(trimmedGoal)
       ? trimmedGoal
@@ -504,7 +625,7 @@ class SessionManager {
 
   private extractSeedTaskMemory(goal: string): string[] {
     const memory: string[] = [];
-    const email = goal.match(EMAIL_ADDRESS_PATTERN)?.[0];
+    const email = this.extractRecipientEmailCandidate(goal).email;
     if (email) {
       memory.push(`Recipient email: ${email}`);
     }
@@ -535,6 +656,15 @@ class SessionManager {
       .filter((item) => prefixPattern.test(item))
       .map((item) => item.replace(prefixPattern, '').trim())
       .filter(Boolean);
+  }
+
+  private upsertRememberedFact(context: ComplexTaskContext, prefix: string, value: string): void {
+    const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const prefixPattern = new RegExp(`^${escapedPrefix}:`, 'i');
+    context.workingMemory = [
+      `${prefix}: ${value.trim()}`,
+      ...context.workingMemory.filter((item) => !prefixPattern.test(item)),
+    ].slice(0, MAX_TASK_MEMORY);
   }
 
   private slugifyLinkedInCompany(company: string): string {
@@ -666,6 +796,137 @@ class SessionManager {
       return { ...subtask, status: 'pending' };
     });
     context.activeSubtask = context.subtasks.find((subtask) => subtask.status === 'active')?.title || null;
+  }
+
+  private isGuidedEmailComposeTask(context: ComplexTaskContext): boolean {
+    return Boolean(context.guidedEmailState) && !this.isResearchToEmailWorkflow(context);
+  }
+
+  private findMatchingInteractiveElement(
+    snapshot: BrowserSnapshot,
+    pattern: RegExp,
+    roles?: string[],
+  ): PageContextElement | null {
+    const elements = snapshot.pageContext.interactiveElements || [];
+    const candidates = elements
+      .filter((element) => !roles || roles.includes(element.role))
+      .filter((element) => {
+        const descriptor = [element.label, element.text, element.placeholder]
+          .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+          .join(' ');
+        return pattern.test(descriptor);
+      })
+      .sort((left, right) => left.index - right.index);
+
+    return candidates[0] || null;
+  }
+
+  private buildInteractiveClickAction(selector: string, target: PageContextElement | null): GeminiAction {
+    if (!target) {
+      return { type: 'click', selector };
+    }
+
+    return {
+      type: 'click',
+      selector,
+      targetId: target.targetId,
+      framePath: target.framePath,
+      shadowPath: target.shadowPath,
+    };
+  }
+
+  private buildInteractiveFillAction(selector: string, value: string, target: PageContextElement | null): GeminiAction {
+    if (!target) {
+      return { type: 'fill', selector, value };
+    }
+
+    return {
+      type: 'fill',
+      selector,
+      value,
+      targetId: target.targetId,
+      framePath: target.framePath,
+      shadowPath: target.shadowPath,
+    };
+  }
+
+  private buildGmailComposeAction(snapshot: BrowserSnapshot): GeminiAction {
+    const composeButton = this.findMatchingInteractiveElement(
+      snapshot,
+      /\b(compose|new email|new message)\b/i,
+      ['button', 'link', 'menuitem', 'tab'],
+    ) || this.findMatchingInteractiveElement(snapshot, /\b(compose|new email|new message)\b/i);
+    return this.buildInteractiveClickAction('Compose', composeButton);
+  }
+
+  private buildGmailSendAction(snapshot: BrowserSnapshot): GeminiAction {
+    const sendButton = this.findMatchingInteractiveElement(
+      snapshot,
+      /\bsend\b/i,
+      ['button', 'link', 'menuitem', 'tab'],
+    ) || this.findMatchingInteractiveElement(snapshot, /\bsend\b/i);
+    return this.buildInteractiveClickAction('Send', sendButton);
+  }
+
+  private buildGmailRecipientFillAction(snapshot: BrowserSnapshot, recipientEmail: string): GeminiAction {
+    const toField = this.findMatchingInteractiveElement(
+      snapshot,
+      /\b(to|recipient|recipients)\b/i,
+      ['textbox', 'searchbox', 'combobox'],
+    ) || this.findMatchingInteractiveElement(snapshot, /\b(to|recipient|recipients)\b/i);
+    return this.buildInteractiveFillAction('To recipients', recipientEmail, toField);
+  }
+
+  private buildGmailSubjectFillAction(snapshot: BrowserSnapshot, subject: string): GeminiAction {
+    const subjectField = this.findMatchingInteractiveElement(
+      snapshot,
+      /\bsubject\b/i,
+      ['textbox', 'searchbox'],
+    ) || this.findMatchingInteractiveElement(snapshot, /\bsubject\b/i);
+    return this.buildInteractiveFillAction('Subject', subject, subjectField);
+  }
+
+  private buildGmailBodyFillAction(snapshot: BrowserSnapshot, body: string): GeminiAction {
+    const bodyField = this.findMatchingInteractiveElement(
+      snapshot,
+      /\b(message body|body)\b/i,
+      ['textbox'],
+    ) || this.findMatchingInteractiveElement(snapshot, /\b(message body|body)\b/i);
+    return this.buildInteractiveFillAction('Message Body', body, bodyField);
+  }
+
+  private doesDraftFieldContainText(currentValue: string | null | undefined, desiredValue: string | null | undefined): boolean {
+    const normalizedCurrent = this.normalizeLooseText(currentValue || '');
+    const normalizedDesired = this.normalizeLooseText(desiredValue || '');
+    if (!normalizedDesired) {
+      return true;
+    }
+
+    if (!normalizedCurrent) {
+      return false;
+    }
+
+    if (normalizedCurrent === normalizedDesired) {
+      return true;
+    }
+
+    const desiredLead = normalizedDesired.slice(0, Math.min(normalizedDesired.length, 64));
+    return desiredLead.length >= 16 && normalizedCurrent.includes(desiredLead);
+  }
+
+  private async waitForGmailDraftToClose(attempts = 4, intervalMs = 300): Promise<boolean> {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const draft = await browserService.inspectGmailDraft();
+      if (!draft?.composeOpen) {
+        return true;
+      }
+
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    }
+
+    return false;
   }
 
   private buildFallbackCompanyFacts(company: string): string[] {
@@ -878,6 +1139,49 @@ class SessionManager {
       return false;
     }
 
+    if (this.isGuidedEmailComposeTask(context)) {
+      const recipientEmail = this.getRememberedFactValue(context, 'Recipient email');
+      const draft = snapshot.pageUrl.toLowerCase().includes('mail.google.com')
+        ? await browserService.inspectGmailDraft()
+        : null;
+      const emailState = context.guidedEmailState;
+      if (recipientEmail && emailState) {
+        if (/\bopen gmail\b/i.test(activeSubtask) && snapshot.pageUrl.toLowerCase().includes('mail.google.com')) {
+          this.recordTaskHistory(context, 'COMPLETED: Opened Gmail.');
+          this.markCurrentSubtaskDone(context);
+          return true;
+        }
+
+        if (/\bclick compose\b/i.test(activeSubtask) && draft?.composeOpen) {
+          this.recordTaskHistory(context, 'COMPLETED: Opened the Gmail compose window.');
+          this.markCurrentSubtaskDone(context);
+          return true;
+        }
+
+        if (/\baddress the draft\b/i.test(activeSubtask) && draft?.toValue?.toLowerCase().includes(recipientEmail.toLowerCase())) {
+          this.recordTaskHistory(context, `COMPLETED: Addressed the draft to ${recipientEmail}.`);
+          this.markCurrentSubtaskDone(context);
+          return true;
+        }
+
+        if (/\bask whether to continue\b/i.test(activeSubtask) && emailState.continueConfirmed) {
+          this.recordTaskHistory(context, 'COMPLETED: Confirmed that I should continue drafting the email.');
+          this.markCurrentSubtaskDone(context);
+          return true;
+        }
+
+        if (
+          /\bdraft the email content\b/i.test(activeSubtask)
+          && this.doesDraftFieldContainText(draft?.subject, emailState.draftSubject)
+          && this.doesDraftFieldContainText(draft?.bodyText, emailState.draftBody)
+        ) {
+          this.recordTaskHistory(context, 'COMPLETED: Filled in the email subject and body.');
+          this.markCurrentSubtaskDone(context);
+          return true;
+        }
+      }
+    }
+
     const company = this.getRememberedFactValue(context, 'Company');
     const alreadyHasFacts = this.hasRememberedCompanyFacts(context);
     const activeUrl = snapshot.pageUrl.toLowerCase();
@@ -963,6 +1267,52 @@ class SessionManager {
         return {
           narration: `I'll open ${simpleOpenGoal.target} directly.`,
           action: { type: 'navigate', url: simpleOpenGoal.url },
+        };
+      }
+    }
+
+    if (recipientEmail && this.isGuidedEmailComposeTask(context)) {
+      const emailState = context.guidedEmailState;
+      if (gmailTab && snapshot.activeTabId !== gmailTab.id) {
+        return {
+          narration: 'I already have Gmail open, so I\'ll switch to that tab.',
+          action: { type: 'switch_tab', tabId: gmailTab.id },
+        };
+      }
+
+      if (!activeUrl.includes('mail.google.com')) {
+        return {
+          narration: 'I\'ll open Gmail first.',
+          action: { type: 'navigate', url: 'https://mail.google.com/mail/u/0/#inbox' },
+        };
+      }
+
+      const draft = await browserService.inspectGmailDraft();
+      if (!draft?.composeOpen) {
+        return {
+          narration: 'I\'ll click Compose to start a new email.',
+          action: this.buildGmailComposeAction(snapshot),
+        };
+      }
+
+      if (!draft.toValue || !draft.toValue.toLowerCase().includes(recipientEmail.toLowerCase())) {
+        return {
+          narration: `I'll address the draft to ${recipientEmail}.`,
+          action: { type: 'fill', selector: 'To recipients', value: recipientEmail },
+        };
+      }
+
+      if (emailState?.draftSubject?.trim() && !this.doesDraftFieldContainText(draft.subject, emailState.draftSubject)) {
+        return {
+          narration: 'I\'ll add the subject line.',
+          action: { type: 'fill', selector: 'Subject', value: emailState.draftSubject },
+        };
+      }
+
+      if (emailState?.draftBody?.trim() && !this.doesDraftFieldContainText(draft.bodyText, emailState.draftBody)) {
+        return {
+          narration: 'I\'ll write the email body now.',
+          action: { type: 'fill', selector: 'Message Body', value: emailState.draftBody },
         };
       }
     }
@@ -1098,6 +1448,246 @@ class SessionManager {
     }
 
     return null;
+  }
+
+  private async maybePromptGuidedEmailWorkflow(
+    context: ComplexTaskContext,
+    snapshot: BrowserSnapshot,
+    runId: number,
+  ): Promise<boolean> {
+    if (!this.isGuidedEmailComposeTask(context) || !context.guidedEmailState) {
+      return false;
+    }
+
+    const recipientEmail = this.getRememberedFactValue(context, 'Recipient email');
+    if (!recipientEmail || !snapshot.pageUrl.toLowerCase().includes('mail.google.com')) {
+      return false;
+    }
+
+    const draft = await browserService.inspectGmailDraft();
+    if (!draft?.composeOpen || !draft.toValue?.toLowerCase().includes(recipientEmail.toLowerCase())) {
+      return false;
+    }
+
+    const emailState = context.guidedEmailState;
+    if (!emailState.continueConfirmed && !this.pendingGuidedEmailPrompt) {
+      await this.promptPendingGuidedEmailPrompt(
+        'continue',
+        'I addressed the draft. Want me to continue?',
+        'Please say yes if you want me to keep drafting, or no to stop here.',
+        runId,
+        context,
+      );
+      return true;
+    }
+
+    if (emailState.continueConfirmed && !emailState.userBrief && !this.pendingGuidedEmailPrompt) {
+      await this.promptPendingGuidedEmailPrompt(
+        'brief',
+        'What should the email say?',
+        'Please tell me what the email should say.',
+        runId,
+        context,
+      );
+      return true;
+    }
+
+    const draftReady = this.doesDraftFieldContainText(draft.subject, emailState.draftSubject)
+      && this.doesDraftFieldContainText(draft.bodyText, emailState.draftBody);
+    if (
+      emailState.draftSubject
+      && emailState.draftBody
+      && draftReady
+      && draft.sendVisible
+      && !this.pendingGuidedEmailPrompt
+    ) {
+      const sendAction = this.buildGmailSendAction(snapshot);
+      await this.showActionTargetHighlight(sendAction, snapshot);
+      await this.promptPendingGuidedEmailPrompt(
+        'send',
+        'Want me to send it? Please say yes to confirm or no to leave it as a draft.',
+        'Please say yes to send it or no to leave it as a draft.',
+        runId,
+        context,
+        sendAction,
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  private async runGuidedEmailComposeWorkflow(
+    context: ComplexTaskContext,
+    runId: number,
+  ): Promise<boolean> {
+    if (!this.isGuidedEmailComposeTask(context) || !context.guidedEmailState) {
+      return false;
+    }
+
+    const recipientEmail = this.getRememberedFactValue(context, 'Recipient email');
+    if (!recipientEmail) {
+      context.status = 'failed';
+      this.broadcastChat('assistant', "I couldn't find the recipient email clearly. Please say the email address again.");
+      await ttsService.speakImmediate("I couldn't find the recipient email clearly. Please say the email address again.");
+      return true;
+    }
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (!this.isRunCurrent(runId)) {
+        return true;
+      }
+
+      const snapshot = await this.captureActiveBrowserSnapshot(runId);
+      if (!snapshot) {
+        context.status = 'failed';
+        this.broadcastChat('assistant', "I couldn't inspect Gmail right now.");
+        await ttsService.speakImmediate("I couldn't inspect Gmail right now.");
+        return true;
+      }
+
+      context.activeTabId = snapshot.activeTabId;
+      const gmailTab = snapshot.tabs.find((tab) => tab.url.includes('mail.google.com')) || null;
+      const activeUrl = snapshot.pageUrl.toLowerCase();
+      if (gmailTab && snapshot.activeTabId !== gmailTab.id) {
+        const switchResult = await this.executeGuidedEmailAction(
+          context,
+          snapshot,
+          { type: 'switch_tab', tabId: gmailTab.id },
+          runId,
+        );
+        if (!switchResult.succeeded) {
+          context.status = 'failed';
+          this.broadcastChat('assistant', "I couldn't switch back to Gmail.");
+          await ttsService.speakImmediate("I couldn't switch back to Gmail.");
+          return true;
+        }
+        continue;
+      }
+
+      if (!activeUrl.includes('mail.google.com')) {
+        const navigationResult = await this.executeGuidedEmailAction(
+          context,
+          snapshot,
+          { type: 'navigate', url: 'https://mail.google.com/mail/u/0/#inbox' },
+          runId,
+        );
+        if (!navigationResult.succeeded) {
+          context.status = 'failed';
+          this.broadcastChat('assistant', "I couldn't open Gmail.");
+          await ttsService.speakImmediate("I couldn't open Gmail.");
+          return true;
+        }
+        continue;
+      }
+
+      const draft = await browserService.inspectGmailDraft();
+      if (!draft?.composeOpen) {
+        const composeAction = this.buildGmailComposeAction(snapshot);
+        const composeResult = await this.executeGuidedEmailAction(context, snapshot, composeAction, runId);
+        if (!composeResult.succeeded) {
+          context.status = 'failed';
+          this.broadcastChat('assistant', "I couldn't open Gmail compose.");
+          await ttsService.speakImmediate("I couldn't open Gmail compose.");
+          return true;
+        }
+        continue;
+      }
+
+      if (context.guidedEmailState.recipientNeedsConfirmation && !context.guidedEmailState.recipientConfirmed) {
+        await this.promptPendingGuidedEmailPrompt(
+          'recipient',
+          `I heard ${recipientEmail}. Should I use that recipient?`,
+          'Please say yes to use that email address or no to restate it.',
+          runId,
+          context,
+        );
+        return true;
+      }
+
+      if (!draft.toValue || !draft.toValue.toLowerCase().includes(recipientEmail.toLowerCase())) {
+        const toAction = this.buildGmailRecipientFillAction(snapshot, recipientEmail);
+        const toResult = await this.executeGuidedEmailAction(context, snapshot, toAction, runId);
+        if (!toResult.succeeded) {
+          context.status = 'failed';
+          this.broadcastChat('assistant', "I couldn't fill the recipient field.");
+          await ttsService.speakImmediate("I couldn't fill the recipient field.");
+          return true;
+        }
+        continue;
+      }
+
+      if (!context.guidedEmailState.continueConfirmed) {
+        await this.promptPendingGuidedEmailPrompt(
+          'continue',
+          'I addressed the draft. Want me to continue?',
+          'Please say yes if you want me to keep drafting, or no to stop here.',
+          runId,
+          context,
+        );
+        return true;
+      }
+
+      if (!context.guidedEmailState.userBrief) {
+        await this.promptPendingGuidedEmailPrompt(
+          'brief',
+          'What should the email say?',
+          'Please tell me what the email should say.',
+          runId,
+          context,
+        );
+        return true;
+      }
+
+      if (
+        context.guidedEmailState.draftSubject?.trim()
+        && !this.doesDraftFieldContainText(draft.subject, context.guidedEmailState.draftSubject)
+      ) {
+        const subjectAction = this.buildGmailSubjectFillAction(snapshot, context.guidedEmailState.draftSubject);
+        const subjectResult = await this.executeGuidedEmailAction(context, snapshot, subjectAction, runId);
+        if (!subjectResult.succeeded) {
+          context.status = 'failed';
+          this.broadcastChat('assistant', "I couldn't fill the subject field.");
+          await ttsService.speakImmediate("I couldn't fill the subject field.");
+          return true;
+        }
+        continue;
+      }
+
+      if (
+        context.guidedEmailState.draftBody?.trim()
+        && !this.doesDraftFieldContainText(draft.bodyText, context.guidedEmailState.draftBody)
+      ) {
+        const bodyAction = this.buildGmailBodyFillAction(snapshot, context.guidedEmailState.draftBody);
+        const bodyResult = await this.executeGuidedEmailAction(context, snapshot, bodyAction, runId);
+        if (!bodyResult.succeeded) {
+          context.status = 'failed';
+          this.broadcastChat('assistant', "I couldn't fill the email body.");
+          await ttsService.speakImmediate("I couldn't fill the email body.");
+          return true;
+        }
+        continue;
+      }
+
+      if (draft.sendVisible) {
+        const sendAction = this.buildGmailSendAction(snapshot);
+        await this.showActionTargetHighlight(sendAction, snapshot);
+        await this.promptPendingGuidedEmailPrompt(
+          'send',
+          'Want me to send it? Please say yes to confirm or no to leave it as a draft.',
+          'Please say yes to send it or no to leave it as a draft.',
+          runId,
+          context,
+          sendAction,
+        );
+        return true;
+      }
+    }
+
+    context.status = 'failed';
+    this.broadcastChat('assistant', "I couldn't finish the Gmail draft flow cleanly. Please try again.");
+    await ttsService.speakImmediate("I couldn't finish the Gmail draft flow cleanly. Please try again.");
+    return true;
   }
 
   private shouldSkipInitialBrowserBootstrap(goal: string): boolean {
@@ -1340,6 +1930,13 @@ class SessionManager {
     this.pendingRiskyAction = null;
   }
 
+  private clearPendingGuidedEmailPrompt(): void {
+    if (this.pendingGuidedEmailPrompt) {
+      windowManager.broadcastToAll('sally:auto-confirmation-stop', undefined);
+    }
+    this.pendingGuidedEmailPrompt = null;
+  }
+
   private mergeWorkingMemory(...groups: Array<string[] | undefined>): string[] {
     const merged: string[] = [];
 
@@ -1544,6 +2141,7 @@ class SessionManager {
       currentRunId: runId,
       recentActions: [],
       autoRescueUsed: false,
+      guidedEmailState: this.createGuidedEmailState(trimmedGoal),
     };
   }
 
@@ -1798,10 +2396,11 @@ class SessionManager {
     action: GeminiAction,
     snapshot: BrowserSnapshot,
     runId: number,
+    previewMs = ACTION_TARGET_PREVIEW_MS,
   ): Promise<string> {
     const showedHighlight = await this.showActionTargetHighlight(action, snapshot);
     if (showedHighlight && this.isRunCurrent(runId)) {
-      await new Promise((resolve) => setTimeout(resolve, ACTION_TARGET_PREVIEW_MS));
+      await new Promise((resolve) => setTimeout(resolve, previewMs));
     }
 
     if (!this.isRunCurrent(runId)) {
@@ -1809,6 +2408,48 @@ class SessionManager {
     }
 
     return browserService.executeAction(action);
+  }
+
+  private async executeGuidedEmailAction(
+    context: ComplexTaskContext,
+    snapshot: BrowserSnapshot,
+    action: GeminiAction,
+    runId: number,
+  ): Promise<{ result: string; succeeded: boolean }> {
+    const result = await this.executeBrowserActionWithPreview(
+      action,
+      snapshot,
+      runId,
+      GUIDED_EMAIL_ACTION_TARGET_PREVIEW_MS,
+    );
+    if (!this.isRunCurrent(runId)) {
+      return { result, succeeded: false };
+    }
+
+    const succeeded = this.didActionSucceed(result);
+    const actionDesc = this.describeAction(action, result);
+    this.recordTaskHistory(context, succeeded ? actionDesc : `FAILED: ${actionDesc}`);
+    this.recordRecentAction(context, action, snapshot);
+    if (succeeded) {
+      context.failureCount = 0;
+      context.lastFailure = null;
+      context.totalActions += 1;
+      context.actionsSincePlan += 1;
+    } else {
+      context.failureCount += 1;
+      context.lastFailure = result;
+    }
+
+    windowManager.broadcastToAll('sally:step', {
+      action: action.type,
+      details: result,
+      timestamp: Date.now(),
+    });
+
+    await this.waitForSettle(action.type, runId);
+    windowManager.clearTargetHighlight();
+    await this.syncOverlayTargetFromBrowser(runId);
+    return { result, succeeded };
   }
 
   private buildRiskyActionPrompt(action: GeminiAction, snapshot: BrowserSnapshot): { prompt: string; descriptor: string } | null {
@@ -1933,6 +2574,256 @@ class SessionManager {
     if (this.isRunCurrent(runId)) {
       this.setState('awaiting_response');
     }
+  }
+
+  private async promptPendingGuidedEmailPrompt(
+    kind: GuidedEmailPromptKind,
+    prompt: string,
+    reprompt: string,
+    runId: number,
+    context: ComplexTaskContext,
+    action?: GeminiAction,
+  ): Promise<void> {
+    if (!context.guidedEmailState) {
+      return;
+    }
+
+    if (kind === 'continue') {
+      context.guidedEmailState.continuePrompted = true;
+    } else if (kind === 'brief') {
+      context.guidedEmailState.briefPrompted = true;
+    } else if (kind === 'send') {
+      context.guidedEmailState.sendPrompted = true;
+    }
+
+    this.pendingGuidedEmailPrompt = {
+      kind,
+      prompt,
+      reprompt,
+      autoListenAttempts: 0,
+      action,
+    };
+
+    context.status = 'awaiting_confirmation';
+    this.persistTaskMemory(context);
+    this.broadcastChat('assistant', prompt);
+    this.setState('awaiting_response');
+    await ttsService.speakImmediate(prompt);
+    if (!this.isRunCurrent(runId) || !this.pendingGuidedEmailPrompt) {
+      return;
+    }
+
+    this.setState('awaiting_response');
+    this.startAutoConfirmationListen();
+  }
+
+  private async handlePendingGuidedEmailPromptMiss(runId: number): Promise<void> {
+    if (!this.pendingGuidedEmailPrompt || !this.currentTask) {
+      return;
+    }
+
+    if (this.pendingGuidedEmailPrompt.autoListenAttempts < 1) {
+      this.pendingGuidedEmailPrompt.autoListenAttempts += 1;
+      this.broadcastChat('assistant', this.pendingGuidedEmailPrompt.reprompt);
+      this.setState('awaiting_response');
+      await ttsService.speakImmediate(this.pendingGuidedEmailPrompt.reprompt);
+      if (!this.isRunCurrent(runId) || !this.pendingGuidedEmailPrompt) {
+        return;
+      }
+
+      this.setState('awaiting_response');
+      this.startAutoConfirmationListen();
+      return;
+    }
+
+    if (this.isRunCurrent(runId)) {
+      this.setState('awaiting_response');
+    }
+  }
+
+  private async finalizeGuidedEmailPause(message: string, runId: number): Promise<void> {
+    const context = this.currentTask;
+    if (context) {
+      context.status = 'completed';
+      this.persistTaskMemory(context);
+    }
+    this.clearPendingGuidedEmailPrompt();
+    this.broadcastChat('assistant', message);
+    await ttsService.speakImmediate(message);
+    if (this.isRunCurrent(runId)) {
+      this.currentTask = null;
+      this.setState('idle');
+    }
+  }
+
+  private async handlePendingGuidedEmailPromptResponse(text: string, runId: number): Promise<boolean> {
+    if (!this.pendingGuidedEmailPrompt || !this.currentTask || !this.currentTask.guidedEmailState) {
+      return false;
+    }
+
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return false;
+    }
+
+    const pendingPrompt = this.pendingGuidedEmailPrompt;
+    const context = this.currentTask;
+    const emailState = context.guidedEmailState;
+    if (!emailState) {
+      this.clearPendingGuidedEmailPrompt();
+      return false;
+    }
+
+    if (pendingPrompt.kind === 'recipient') {
+      if (this.isExplicitCancel(trimmed) || this.isNegativeConfirmation(trimmed)) {
+        await this.finalizeGuidedEmailPause('Okay, please say the email address again.', runId);
+        return true;
+      }
+
+      if (this.isAffirmativeConfirmation(trimmed)) {
+        emailState.recipientConfirmed = true;
+        this.clearPendingGuidedEmailPrompt();
+        context.status = 'executing';
+        await this.runPlannedBrowserTask(context, runId, {
+          skipIntro: true,
+          forcePlanReason: 'guided_email_recipient_confirmed',
+        });
+        return true;
+      }
+
+      await this.handlePendingGuidedEmailPromptMiss(runId);
+      return true;
+    }
+
+    if (pendingPrompt.kind === 'continue') {
+      if (this.isExplicitCancel(trimmed) || this.isNegativeConfirmation(trimmed)) {
+        await this.finalizeGuidedEmailPause("Okay, I'll leave the draft open.", runId);
+        return true;
+      }
+
+      if (this.isAffirmativeConfirmation(trimmed)) {
+        emailState.continueConfirmed = true;
+        this.clearPendingGuidedEmailPrompt();
+        context.status = 'executing';
+        this.recordTaskHistory(context, 'COMPLETED: User asked me to continue drafting the email.');
+        this.markCurrentSubtaskDone(context);
+        await this.promptPendingGuidedEmailPrompt(
+          'brief',
+          'What should the email say?',
+          'Please tell me what the email should say.',
+          runId,
+          context,
+        );
+        return true;
+      }
+
+      await this.handlePendingGuidedEmailPromptMiss(runId);
+      return true;
+    }
+
+    if (pendingPrompt.kind === 'brief') {
+      if (this.isExplicitCancel(trimmed) || this.isNegativeConfirmation(trimmed)) {
+        await this.finalizeGuidedEmailPause("Okay, I'll leave the draft open.", runId);
+        return true;
+      }
+
+      this.clearPendingGuidedEmailPrompt();
+      emailState.userBrief = trimmed;
+      this.upsertRememberedFact(context, 'Email brief', trimmed);
+      context.status = 'executing';
+      this.setState('acting');
+
+      try {
+        const recipientEmail = this.getRememberedFactValue(context, 'Recipient email') || '';
+        const draft = await geminiService.generateEmailDraft({
+          goal: context.goal,
+          recipientEmail,
+          brief: trimmed,
+        });
+        if (!this.isRunCurrent(runId) || !this.currentTask?.guidedEmailState) {
+          return true;
+        }
+
+        this.currentTask.guidedEmailState.draftSubject = draft.subject;
+        this.currentTask.guidedEmailState.draftBody = draft.body;
+        this.upsertRememberedFact(this.currentTask, 'Draft subject', draft.subject);
+        this.recordTaskHistory(this.currentTask, 'REMEMBERED: Generated the email subject and body.');
+        await this.runPlannedBrowserTask(this.currentTask, runId, {
+          skipIntro: true,
+          forcePlanReason: 'guided_email_draft_ready',
+        });
+        return true;
+      } catch (error) {
+        if (!this.isRunCurrent(runId)) {
+          return true;
+        }
+        console.error('[SessionManager] Guided email drafting failed:', error);
+        await this.promptPendingGuidedEmailPrompt(
+          'brief',
+          "I couldn't draft that just now. What should the email say?",
+          'Please tell me what the email should say.',
+          runId,
+          context,
+        );
+        return true;
+      }
+    }
+
+    if (pendingPrompt.kind === 'send') {
+      if (this.isExplicitCancel(trimmed) || this.isNegativeConfirmation(trimmed)) {
+        await this.finalizeGuidedEmailPause("Okay, I'll leave it as a draft.", runId);
+        return true;
+      }
+
+      if (!this.isAffirmativeConfirmation(trimmed)) {
+        await this.handlePendingGuidedEmailPromptMiss(runId);
+        return true;
+      }
+
+      const sendAction: GeminiAction = pendingPrompt.action || { type: 'click', selector: 'Send' };
+      this.clearPendingGuidedEmailPrompt();
+      context.status = 'executing';
+      this.setState('acting');
+
+      const confirmationSnapshot = await this.captureActiveBrowserSnapshot(runId);
+      const actionResult = confirmationSnapshot
+        ? await this.executeBrowserActionWithPreview(sendAction, confirmationSnapshot, runId)
+        : await browserService.executeAction(sendAction);
+      if (!this.isRunCurrent(runId) || !this.currentTask) {
+        return true;
+      }
+
+      const succeeded = this.didActionSucceed(actionResult);
+      const actionDesc = this.describeAction(sendAction, actionResult);
+      this.recordTaskHistory(this.currentTask, succeeded ? actionDesc : `FAILED: ${actionDesc}`);
+      await this.waitForSettle(sendAction.type, runId);
+      windowManager.clearTargetHighlight();
+
+      const sentSuccessfully = succeeded && await this.waitForGmailDraftToClose();
+      if (!sentSuccessfully) {
+        this.currentTask.status = 'failed';
+        this.broadcastChat('assistant', "I couldn't send the email yet. The draft is still open.");
+        await ttsService.speakImmediate("I couldn't send the email yet. The draft is still open.");
+        if (this.isRunCurrent(runId)) {
+          this.currentTask = null;
+          this.setState('idle');
+        }
+        return true;
+      }
+
+      this.markCurrentSubtaskDone(this.currentTask);
+      this.currentTask.status = 'completed';
+      this.persistTaskMemory(this.currentTask);
+      this.broadcastChat('assistant', 'Email sent.');
+      await ttsService.speakImmediate('Email sent.');
+      if (this.isRunCurrent(runId)) {
+        this.currentTask = null;
+        this.setState('idle');
+      }
+      return true;
+    }
+
+    return false;
   }
 
   private async refreshTaskPlan(
@@ -2436,6 +3327,10 @@ class SessionManager {
       || this.state === 'awaiting_response';
   }
 
+  private hasPendingReplyState(): boolean {
+    return Boolean(this.pendingRiskyAction || this.pendingGuidedEmailPrompt || this.pendingClarificationQuestion);
+  }
+
   beginListeningFromHotkey(): void {
     if (this.isBusyState()) {
       this.invalidateRun();
@@ -2710,6 +3605,11 @@ class SessionManager {
       return;
     }
 
+    if (details?.mode === 'confirmation' && this.pendingGuidedEmailPrompt && this.currentTask) {
+      await this.handlePendingGuidedEmailPromptMiss(runId);
+      return;
+    }
+
     ttsService.speakImmediate('Do you need help with anything else?');
     if (this.isRunCurrent(runId)) {
       this.setState('idle');
@@ -2746,6 +3646,12 @@ class SessionManager {
         return trimmed;
       }
 
+      if (await this.handlePendingGuidedEmailPromptResponse(trimmed, runId)) {
+        sessionEndStatus = this.state === 'awaiting_response' ? 'awaiting_response' : 'completed';
+        sessionEndMetadata.pendingGuidedEmailResponse = true;
+        return trimmed;
+      }
+
       const interpretation = await this.interpretUserRequest(trimmed, source);
       if (!this.isRunCurrent(runId)) {
         sessionEndStatus = 'interrupted';
@@ -2770,12 +3676,14 @@ class SessionManager {
           sessionEndStatus = 'cancelled';
           this.clearPendingClarification();
           this.clearPendingRiskyAction();
+          this.clearPendingGuidedEmailPrompt();
           await this.cancel();
           return 'cancel';
 
         case 'describe_screen':
           sessionEndStatus = 'completed';
           this.clearPendingClarification();
+          this.clearPendingGuidedEmailPrompt();
           this.addRecentTurn({
             user: trimmed,
             intent: interpretation.intent,
@@ -2787,6 +3695,7 @@ class SessionManager {
         case 'summarize_screen':
           sessionEndStatus = 'completed';
           this.clearPendingClarification();
+          this.clearPendingGuidedEmailPrompt();
           this.addRecentTurn({
             user: trimmed,
             intent: interpretation.intent,
@@ -2798,6 +3707,7 @@ class SessionManager {
         case 'screen_question':
           sessionEndStatus = 'completed';
           this.clearPendingClarification();
+          this.clearPendingGuidedEmailPrompt();
           this.addRecentTurn({
             user: trimmed,
             intent: interpretation.intent,
@@ -2809,6 +3719,7 @@ class SessionManager {
         case 'browser_assistive': {
           const browserAssistiveIntent = interpretation.browserAssistiveIntent || 'actions';
           this.clearPendingClarification();
+          this.clearPendingGuidedEmailPrompt();
           this.addRecentTurn({
             user: trimmed,
             intent: interpretation.intent,
@@ -2822,6 +3733,7 @@ class SessionManager {
 
         case 'browser_rescue': {
           this.clearPendingClarification();
+          this.clearPendingGuidedEmailPrompt();
           this.addRecentTurn({
             user: trimmed,
             intent: interpretation.intent,
@@ -2835,6 +3747,7 @@ class SessionManager {
         case 'smart_home': {
           this.clearPendingClarification();
           this.clearPendingRiskyAction();
+          this.clearPendingGuidedEmailPrompt();
           const normalizedInstruction = interpretation.normalizedInstruction || trimmed;
           const expanded = this.expandSmartCommand(normalizedInstruction);
           if (expanded !== normalizedInstruction) {
@@ -2857,6 +3770,7 @@ class SessionManager {
         case 'browser_task': {
           this.clearPendingClarification();
           this.clearPendingRiskyAction();
+          this.clearPendingGuidedEmailPrompt();
           const normalizedInstruction = interpretation.normalizedInstruction || trimmed;
           this.addRecentTurn({
             user: trimmed,
@@ -2882,6 +3796,7 @@ class SessionManager {
         case 'chat': {
           sessionEndStatus = 'completed';
           this.clearPendingClarification();
+          this.clearPendingGuidedEmailPrompt();
           const response = interpretation.spokenResponse || GENERIC_CHAT_RESPONSE;
           this.addRecentTurn({
             user: trimmed,
@@ -2899,6 +3814,7 @@ class SessionManager {
 
         case 'clarify': {
           sessionEndStatus = 'awaiting_response';
+          this.clearPendingGuidedEmailPrompt();
           const question = interpretation.clarificationQuestion || GENERIC_CLARIFICATION_RESPONSE;
           this.pendingClarificationQuestion = question;
           this.addRecentTurn({
@@ -2926,6 +3842,7 @@ class SessionManager {
             : "I didn't catch that clearly. Please say it again.";
           this.clearPendingClarification();
           this.clearPendingRiskyAction();
+          this.clearPendingGuidedEmailPrompt();
           this.broadcastChat('assistant', response);
           await ttsService.speakImmediate(response);
           if (this.isRunCurrent(runId)) {
@@ -3730,6 +4647,9 @@ class SessionManager {
 
     context.currentRunId = runId;
     this.currentTask = context;
+    if (context.status !== 'completed' && context.status !== 'failed') {
+      context.status = 'executing';
+    }
     this.setState('acting');
 
     let forcePlanReason = options.forcePlanReason || (context.totalActions === 0 ? 'task_start' : null);
@@ -3748,6 +4668,10 @@ class SessionManager {
         await ttsService.speakImmediate(launchNotice);
       }
       await this.syncOverlayTargetFromBrowser(runId);
+
+      if (await this.runGuidedEmailComposeWorkflow(context, runId)) {
+        return;
+      }
 
       if (await this.runResearchToEmailWorkflow(context, runId)) {
         return;
@@ -3887,6 +4811,10 @@ class SessionManager {
         if (completedWorkflowStep) {
           forcePlanReason = 'subtask_complete';
           continue;
+        }
+
+        if (await this.maybePromptGuidedEmailWorkflow(context, snapshot, runId)) {
+          return;
         }
 
         let result: import('../services/geminiService.js').GeminiInterpretResult;
@@ -4031,10 +4959,10 @@ class SessionManager {
       ttsService.speakImmediate("Something went wrong. Let me know if you'd like to try again.");
     } finally {
       this.persistTaskMemory(context);
-      if (!this.pendingRiskyAction && (context.status === 'completed' || context.status === 'failed')) {
+      if (!this.hasPendingReplyState() && (context.status === 'completed' || context.status === 'failed')) {
         this.currentTask = null;
       }
-      if (this.isRunCurrent(runId) && !this.pendingRiskyAction) {
+      if (this.isRunCurrent(runId) && !this.hasPendingReplyState()) {
         this.setState('idle');
       }
     }
@@ -4103,6 +5031,7 @@ class SessionManager {
     });
     this.clearPendingClarification();
     this.clearPendingRiskyAction();
+    this.clearPendingGuidedEmailPrompt();
     this.currentTask = null;
     this.sessionWorkingMemory = [];
     ttsService.stop();
