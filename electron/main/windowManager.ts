@@ -212,7 +212,7 @@ class WindowManager {
       title: 'Sally Browser',
       autoHideMenuBar: true,
       show: false,
-      backgroundColor: '#0b1220',
+      backgroundColor: '#050505',
       webPreferences: {
         preload: this.getPreloadPath(),
         contextIsolation: true,

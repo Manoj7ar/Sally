@@ -75,8 +75,8 @@ export default function BrowserWindow() {
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        background: '#081120',
-        color: '#e6eef8',
+        background: '#050505',
+        color: '#f3f4f6',
       }}
     >
       <div
@@ -84,8 +84,11 @@ export default function BrowserWindow() {
         style={{
           height: CHROME_HEIGHT,
           padding: '12px 16px 14px',
-          background: 'linear-gradient(180deg, #0f172a 0%, #111d34 70%, #0f172a 100%)',
-          borderBottom: '1px solid rgba(148,163,184,0.18)',
+          background: 'linear-gradient(180deg, rgba(12,12,14,0.86) 0%, rgba(7,7,9,0.76) 100%)',
+          borderBottom: '1px solid rgba(255,255,255,0.08)',
+          backdropFilter: 'blur(22px) saturate(140%)',
+          WebkitBackdropFilter: 'blur(22px) saturate(140%)',
+          boxShadow: '0 18px 40px rgba(0,0,0,0.38), inset 0 1px 0 rgba(255,255,255,0.06)',
           display: 'flex',
           flexDirection: 'column',
           gap: 12,
@@ -109,11 +112,14 @@ export default function BrowserWindow() {
                   gap: 10,
                   padding: '0 12px',
                   borderRadius: 14,
-                  border: tab.isActive ? '1px solid rgba(96,165,250,0.4)' : '1px solid rgba(255,255,255,0.05)',
-                  background: tab.isActive ? 'rgba(37,99,235,0.22)' : 'rgba(15,23,42,0.72)',
-                  color: '#f8fafc',
+                  border: tab.isActive ? '1px solid rgba(255,255,255,0.16)' : '1px solid rgba(255,255,255,0.06)',
+                  background: tab.isActive ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)',
+                  boxShadow: tab.isActive ? 'inset 0 1px 0 rgba(255,255,255,0.08), 0 10px 24px rgba(0,0,0,0.24)' : 'none',
+                  color: '#f9fafb',
                   cursor: 'pointer',
                   flexShrink: 0,
+                  backdropFilter: 'blur(16px)',
+                  WebkitBackdropFilter: 'blur(16px)',
                 }}
               >
                 <span
@@ -121,8 +127,8 @@ export default function BrowserWindow() {
                     width: 16,
                     height: 16,
                     borderRadius: 999,
-                    background: tab.isLoading ? '#60a5fa' : '#1e293b',
-                    color: '#dbeafe',
+                    background: tab.isLoading ? 'rgba(255,255,255,0.90)' : 'rgba(255,255,255,0.14)',
+                    color: '#111111',
                     fontSize: 10,
                     fontWeight: 700,
                     display: 'flex',
@@ -157,13 +163,13 @@ export default function BrowserWindow() {
                     alignItems: 'center',
                     justifyContent: 'center',
                     borderRadius: 999,
-                    background: 'rgba(255,255,255,0.06)',
+                    background: 'rgba(255,255,255,0.08)',
                     fontSize: 11,
-                    color: 'rgba(255,255,255,0.72)',
+                    color: 'rgba(255,255,255,0.76)',
                     flexShrink: 0,
                   }}
                 >
-                  ×
+                  x
                 </span>
               </button>
             ))}
@@ -177,9 +183,12 @@ export default function BrowserWindow() {
               width: 36,
               height: 36,
               borderRadius: 12,
-              border: '1px solid rgba(96,165,250,0.25)',
-              background: 'rgba(37,99,235,0.18)',
-              color: '#dbeafe',
+              border: '1px solid rgba(255,255,255,0.10)',
+              background: 'rgba(255,255,255,0.06)',
+              color: '#f3f4f6',
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
+              backdropFilter: 'blur(16px)',
+              WebkitBackdropFilter: 'blur(16px)',
               cursor: 'pointer',
               fontSize: 20,
               lineHeight: 1,
@@ -200,13 +209,15 @@ export default function BrowserWindow() {
                 width: 34,
                 height: 34,
                 borderRadius: 12,
-                border: '1px solid rgba(255,255,255,0.06)',
-                background: browserState.canGoBack ? 'rgba(15,23,42,0.9)' : 'rgba(15,23,42,0.5)',
-                color: browserState.canGoBack ? '#e2e8f0' : 'rgba(226,232,240,0.32)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: browserState.canGoBack ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)',
+                color: browserState.canGoBack ? '#f3f4f6' : 'rgba(243,244,246,0.28)',
+                backdropFilter: 'blur(14px)',
+                WebkitBackdropFilter: 'blur(14px)',
                 cursor: browserState.canGoBack ? 'pointer' : 'default',
               }}
             >
-              ←
+              {'<'}
             </button>
             <button
               data-testid="browser-go-forward"
@@ -216,13 +227,15 @@ export default function BrowserWindow() {
                 width: 34,
                 height: 34,
                 borderRadius: 12,
-                border: '1px solid rgba(255,255,255,0.06)',
-                background: browserState.canGoForward ? 'rgba(15,23,42,0.9)' : 'rgba(15,23,42,0.5)',
-                color: browserState.canGoForward ? '#e2e8f0' : 'rgba(226,232,240,0.32)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: browserState.canGoForward ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)',
+                color: browserState.canGoForward ? '#f3f4f6' : 'rgba(243,244,246,0.28)',
+                backdropFilter: 'blur(14px)',
+                WebkitBackdropFilter: 'blur(14px)',
                 cursor: browserState.canGoForward ? 'pointer' : 'default',
               }}
             >
-              →
+              {'>'}
             </button>
             <button
               data-testid="browser-reload"
@@ -231,13 +244,15 @@ export default function BrowserWindow() {
                 width: 34,
                 height: 34,
                 borderRadius: 12,
-                border: '1px solid rgba(255,255,255,0.06)',
-                background: 'rgba(15,23,42,0.9)',
-                color: '#e2e8f0',
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.08)',
+                color: '#f3f4f6',
+                backdropFilter: 'blur(14px)',
+                WebkitBackdropFilter: 'blur(14px)',
                 cursor: 'pointer',
               }}
             >
-              ↻
+              R
             </button>
           </div>
 
@@ -252,9 +267,11 @@ export default function BrowserWindow() {
               height: 42,
               padding: '0 14px',
               borderRadius: 16,
-              background: 'rgba(15,23,42,0.82)',
-              border: '1px solid rgba(148,163,184,0.16)',
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
+              background: 'rgba(10,10,12,0.58)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05), 0 12px 28px rgba(0,0,0,0.22)',
+              backdropFilter: 'blur(18px)',
+              WebkitBackdropFilter: 'blur(18px)',
             }}
           >
             <div
@@ -271,8 +288,8 @@ export default function BrowserWindow() {
                   width: 10,
                   height: 10,
                   borderRadius: 999,
-                  background: browserState.isLoading ? '#60a5fa' : '#22c55e',
-                  boxShadow: `0 0 12px ${browserState.isLoading ? 'rgba(96,165,250,0.55)' : 'rgba(34,197,94,0.4)'}`,
+                  background: browserState.isLoading ? '#f9fafb' : '#9ca3af',
+                  boxShadow: `0 0 12px ${browserState.isLoading ? 'rgba(249,250,251,0.50)' : 'rgba(156,163,175,0.35)'}`,
                   flexShrink: 0,
                 }}
               />
@@ -295,7 +312,7 @@ export default function BrowserWindow() {
                   border: 'none',
                   outline: 'none',
                   background: 'transparent',
-                  color: '#f8fafc',
+                  color: '#f9fafb',
                   fontSize: 13,
                 }}
               />
@@ -308,9 +325,11 @@ export default function BrowserWindow() {
                 height: 30,
                 padding: '0 12px',
                 borderRadius: 10,
-                border: '1px solid rgba(96,165,250,0.22)',
-                background: 'rgba(37,99,235,0.18)',
-                color: '#dbeafe',
+                border: '1px solid rgba(255,255,255,0.10)',
+                background: 'rgba(255,255,255,0.08)',
+                color: '#f9fafb',
+                backdropFilter: 'blur(14px)',
+                WebkitBackdropFilter: 'blur(14px)',
                 cursor: 'pointer',
                 fontSize: 12,
                 fontWeight: 700,
@@ -328,9 +347,11 @@ export default function BrowserWindow() {
               height: 34,
               padding: '0 12px',
               borderRadius: 12,
-              border: '1px solid rgba(255,255,255,0.06)',
-              background: 'rgba(15,23,42,0.9)',
-              color: '#cbd5e1',
+              border: '1px solid rgba(255,255,255,0.08)',
+              background: 'rgba(255,255,255,0.06)',
+              color: '#d1d5db',
+              backdropFilter: 'blur(14px)',
+              WebkitBackdropFilter: 'blur(14px)',
               cursor: 'pointer',
               fontSize: 12,
               fontWeight: 700,
@@ -345,7 +366,7 @@ export default function BrowserWindow() {
         style={{
           flex: 1,
           minHeight: 0,
-          background: 'linear-gradient(180deg, rgba(8,17,32,0.35) 0%, rgba(8,17,32,0) 100%)',
+          background: 'linear-gradient(180deg, rgba(0,0,0,0.24) 0%, rgba(0,0,0,0) 100%)',
           position: 'relative',
         }}
       >
@@ -359,7 +380,7 @@ export default function BrowserWindow() {
             alignItems: 'center',
             justifyContent: 'space-between',
             pointerEvents: 'none',
-            color: 'rgba(226,232,240,0.68)',
+            color: 'rgba(229,231,235,0.68)',
             fontSize: 11.5,
             fontWeight: 600,
             letterSpacing: '0.02em',
