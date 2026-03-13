@@ -2,81 +2,75 @@
 import { store, STORE_KEYS } from '../utils/store.js';
 import type { SallyProvider } from '../../../shared/types.js';
 
-class ApiKeyManager {
-  // ============ ANTHROPIC API KEY ============
+export interface ApiKeyStoreAdapter {
+  get: (key: string) => unknown;
+  set: (key: string, value: unknown) => void;
+}
 
-  setAnthropicApiKey(key: string): void {
-    store.set(STORE_KEYS.ANTHROPIC_API_KEY_ENCRYPTED, key);
-  }
+type FetchLike = typeof fetch;
+type AbortTimeoutFactory = (milliseconds: number) => AbortSignal;
 
-  getAnthropicApiKey(): string | null {
-    const value = store.get(STORE_KEYS.ANTHROPIC_API_KEY_ENCRYPTED);
-    return value || null;
-  }
-
-  hasAnthropicApiKey(): boolean {
-    const value = store.get(STORE_KEYS.ANTHROPIC_API_KEY_ENCRYPTED);
-    return !!value && value.length > 0;
-  }
-
-  clearAnthropicApiKey(): void {
-    store.set(STORE_KEYS.ANTHROPIC_API_KEY_ENCRYPTED, '');
-  }
+export class ApiKeyManager {
+  constructor(
+    private readonly storage: ApiKeyStoreAdapter = store,
+    private readonly fetchImpl: FetchLike = fetch,
+    private readonly abortTimeout: AbortTimeoutFactory = AbortSignal.timeout,
+  ) {}
 
   // ============ ELEVENLABS API KEY ============
 
   setElevenLabsKey(key: string): void {
-    store.set(STORE_KEYS.ELEVENLABS_API_KEY, key);
+    this.storage.set(STORE_KEYS.ELEVENLABS_API_KEY, key);
   }
 
   getElevenLabsKey(): string | null {
-    const value = store.get(STORE_KEYS.ELEVENLABS_API_KEY);
-    return value || null;
+    const value = this.storage.get(STORE_KEYS.ELEVENLABS_API_KEY);
+    return typeof value === 'string' && value ? value : null;
   }
 
   hasElevenLabsKey(): boolean {
-    const value = store.get(STORE_KEYS.ELEVENLABS_API_KEY);
-    return !!value && value.length > 0;
+    return Boolean(this.getElevenLabsKey());
   }
 
   // ============ GEMINI API KEY ============
 
   setGeminiApiKey(key: string): void {
-    store.set(STORE_KEYS.GEMINI_API_KEY, key);
+    this.storage.set(STORE_KEYS.GEMINI_API_KEY, key);
   }
 
   getGeminiApiKey(): string | null {
-    const value = store.get(STORE_KEYS.GEMINI_API_KEY);
-    return value || null;
+    const value = this.storage.get(STORE_KEYS.GEMINI_API_KEY);
+    return typeof value === 'string' && value ? value : null;
   }
 
   hasGeminiApiKey(): boolean {
-    const value = store.get(STORE_KEYS.GEMINI_API_KEY);
-    return !!value && value.length > 0;
+    return Boolean(this.getGeminiApiKey());
   }
 
   clearGeminiApiKey(): void {
-    store.set(STORE_KEYS.GEMINI_API_KEY, '');
+    this.storage.set(STORE_KEYS.GEMINI_API_KEY, '');
   }
 
   // ============ GEMINI BACKEND URL ============
 
   setGeminiBackendUrl(url: string): void {
-    store.set(STORE_KEYS.GEMINI_BACKEND_URL, url);
+    this.storage.set(STORE_KEYS.GEMINI_BACKEND_URL, url);
   }
 
   getGeminiBackendUrl(): string {
-    return store.get(STORE_KEYS.GEMINI_BACKEND_URL) || '';
+    const value = this.storage.get(STORE_KEYS.GEMINI_BACKEND_URL);
+    return typeof value === 'string' ? value : '';
   }
 
   // ============ SCREEN QUESTION AUTO RESEARCH ============
 
   setAutoResearchScreenQuestions(enabled: boolean): void {
-    store.set(STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS, enabled);
+    this.storage.set(STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS, enabled);
   }
 
   getAutoResearchScreenQuestions(): boolean {
-    return store.get(STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS) ?? false;
+    const value = this.storage.get(STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS);
+    return typeof value === 'boolean' ? value : false;
   }
 
   // ============ GENERIC KEY METHODS (delegate by current provider) ============
@@ -110,7 +104,7 @@ class ApiKeyManager {
     if (provider !== 'gemini') {
       throw new Error(`Unsupported provider: ${provider}`);
     }
-    store.set(STORE_KEYS.PROVIDER, 'gemini');
+    this.storage.set(STORE_KEYS.PROVIDER, 'gemini');
   }
 
   // ============ KEY VALIDATION ============
@@ -118,9 +112,9 @@ class ApiKeyManager {
   async testApiKey(provider: SallyProvider, key: string): Promise<boolean> {
     try {
       if (provider === 'gemini') {
-        const response = await fetch(
+        const response = await this.fetchImpl(
           `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
-          { method: 'GET', signal: AbortSignal.timeout(5000) },
+          { method: 'GET', signal: this.abortTimeout(5000) },
         );
         return response.ok;
       }

@@ -8,6 +8,12 @@ import { browserService } from '../services/browserService.js';
 import { cloudLog } from '../services/cloudLogger.js';
 import { destinationResolver } from '../services/destinationResolver.js';
 import { apiKeyManager } from './apiKeyManager.js';
+import {
+  buildGuidedEmailSubtasks as buildGuidedEmailSubtasksValue,
+  extractRecipientEmailCandidate as extractRecipientEmailCandidateValue,
+  isGuidedEmailComposeGoal as isGuidedEmailComposeGoalValue,
+} from './guidedEmailHeuristics.js';
+import { mainLogger } from '../utils/logger.js';
 import type {
   GeminiAction,
   GeminiTaskPlan,
@@ -373,7 +379,7 @@ class SessionManager {
   private pendingGuidedEmailPrompt: PendingGuidedEmailPrompt | null = null;
 
   initialize(): void {
-    console.log('[SessionManager] Initialized (Electron browser + Gemini agentic mode)');
+    mainLogger.info('[SessionManager] Initialized (Electron browser + Gemini agentic mode)');
   }
 
   private clearWaitTimeout(): void {
@@ -494,60 +500,12 @@ class SessionManager {
     return `Browser workflow:\n${formattedClauses.join('\n')}`;
   }
 
-  private normalizeEmailCandidate(email: string): string {
-    return email.trim().replace(/[>,.;!?]+$/g, '').toLowerCase();
-  }
-
   private extractRecipientEmailCandidate(goal: string): { email: string | null; needsConfirmation: boolean } {
-    const directMatch = goal.match(EMAIL_ADDRESS_PATTERN)?.[0];
-    if (directMatch) {
-      const email = this.normalizeEmailCandidate(directMatch);
-      return {
-        email,
-        needsConfirmation: this.isSuspiciousRecipientEmail(email),
-      };
-    }
-
-    const spokenNormalized = goal
-      .toLowerCase()
-      .replace(/\b(?:at)\b/g, '@')
-      .replace(/\b(?:dot|period)\b/g, '.')
-      .replace(/\b(?:underscore)\b/g, '_')
-      .replace(/\b(?:dash|hyphen)\b/g, '-')
-      .replace(/\b(?:plus)\b/g, '+')
-      .replace(/\s*@\s*/g, '@')
-      .replace(/\s*\.\s*/g, '.')
-      .replace(/\s*\+\s*/g, '+')
-      .replace(/\s*-\s*/g, '-')
-      .replace(/\s*_\s*/g, '_');
-    const spokenMatch = spokenNormalized.match(EMAIL_ADDRESS_PATTERN)?.[0];
-    if (!spokenMatch) {
-      return { email: null, needsConfirmation: false };
-    }
-
-    return {
-      email: this.normalizeEmailCandidate(spokenMatch),
-      needsConfirmation: true,
-    };
-  }
-
-  private isSuspiciousRecipientEmail(email: string): boolean {
-    const [localPart = '', domain = ''] = email.split('@');
-    const domainParts = domain.split('.').filter(Boolean);
-    return (
-      localPart.length < 3
-      || domainParts.length < 2
-      || domainParts.some((part) => part.length < 2)
-      || /[._%+-]{2,}/.test(email)
-    );
+    return extractRecipientEmailCandidateValue(goal);
   }
 
   private isGuidedEmailComposeGoal(goal: string): boolean {
-    const recipient = this.extractRecipientEmailCandidate(goal);
-    const normalized = this.normalizeLooseText(goal);
-    return Boolean(recipient.email)
-      && /\b(compose|draft|write|email)\b/i.test(normalized)
-      && !/\b(linkedin page|official website|company website|remember key facts)\b/i.test(normalized);
+    return isGuidedEmailComposeGoalValue(goal);
   }
 
   private createGuidedEmailState(goal: string): GuidedEmailState | null {
@@ -570,19 +528,7 @@ class SessionManager {
   }
 
   private buildGuidedEmailSubtasks(goal: string): GeminiTaskSubtask[] | null {
-    if (!this.isGuidedEmailComposeGoal(goal)) {
-      return null;
-    }
-
-    const recipientEmail = this.extractRecipientEmailCandidate(goal).email || 'the requested recipient';
-    return [
-      { id: 's1', title: 'Open Gmail', status: 'active' },
-      { id: 's2', title: 'Click Compose', status: 'pending' },
-      { id: 's3', title: `Address the draft to ${recipientEmail}`, status: 'pending' },
-      { id: 's4', title: 'Ask whether to continue', status: 'pending' },
-      { id: 's5', title: 'Draft the email content', status: 'pending' },
-      { id: 's6', title: 'Ask whether to send it', status: 'pending' },
-    ];
+    return buildGuidedEmailSubtasksValue(goal);
   }
 
   private buildHeuristicSubtasks(goal: string): GeminiTaskSubtask[] {
@@ -2757,7 +2703,7 @@ class SessionManager {
         if (!this.isRunCurrent(runId)) {
           return true;
         }
-        console.error('[SessionManager] Guided email drafting failed:', error);
+        mainLogger.error('[SessionManager] Guided email drafting failed:', error);
         await this.promptPendingGuidedEmailPrompt(
           'brief',
           "I couldn't draft that just now. What should the email say?",
@@ -3288,13 +3234,13 @@ class SessionManager {
       });
       return this.applyInterpretationGuards(trimmed, interpretation);
     } catch (error) {
-      console.warn('[SessionManager] Semantic interpreter failed, falling back to legacy routing:', error);
+      mainLogger.warn('[SessionManager] Semantic interpreter failed, falling back to legacy routing:', error);
       return this.applyInterpretationGuards(trimmed, this.buildLegacyInterpretation(trimmed));
     }
   }
 
   private logInterpretation(text: string, interpretation: GeminiUserRequestInterpretation): void {
-    console.log('[SessionManager] Interpreted request:', text, {
+    mainLogger.info('[SessionManager] Interpreted request:', text, {
       intent: interpretation.intent,
       confidence: interpretation.confidence,
       normalizedInstruction: interpretation.normalizedInstruction,
@@ -3347,7 +3293,7 @@ class SessionManager {
     if (!this.isRunCurrent(runId)) return;
 
     const bounds = await browserService.getBrowserWindowBounds().catch((error) => {
-      console.warn('[SessionManager] Failed to sync browser display target:', error);
+      mainLogger.warn('[SessionManager] Failed to sync browser display target:', error);
       return null;
     });
 
@@ -3389,7 +3335,7 @@ class SessionManager {
 
     const simpleOpenGoal = await this.resolveSimpleOpenGoal(trimmed);
     if (simpleOpenGoal) {
-      console.log('[SessionManager] Resolved destination:', simpleOpenGoal.target, '->', simpleOpenGoal.url);
+      mainLogger.info('[SessionManager] Resolved destination:', simpleOpenGoal.target, '->', simpleOpenGoal.url);
       return simpleOpenGoal.url;
     }
 
@@ -3556,7 +3502,7 @@ class SessionManager {
         if (!this.isRunCurrent(runId)) {
           return;
         }
-        console.error('[SessionManager] Task execution failed:', error);
+        mainLogger.error('[SessionManager] Task execution failed:', error);
         ttsService.speakImmediate('Something went wrong. Please try again.');
         this.setState('idle');
       });
@@ -3566,7 +3512,7 @@ class SessionManager {
       if (!this.isRunCurrent(runId)) {
         return '';
       }
-      console.error('[SessionManager] Transcription failed:', error);
+      mainLogger.error('[SessionManager] Transcription failed:', error);
       ttsService.speakImmediate("I couldn't understand that, please try again.");
       this.setState('idle');
       return '';
@@ -3589,7 +3535,7 @@ class SessionManager {
     const runId = this.startRun();
     this.setState('processing');
 
-    console.log('[SessionManager] Ignoring silent voice input:', {
+    mainLogger.info('[SessionManager] Ignoring silent voice input:', {
       durationMs: details?.durationMs ?? 0,
       peakLevel: details?.peakLevel ?? 0,
       averageLevel: details?.averageLevel ?? 0,
@@ -3751,7 +3697,7 @@ class SessionManager {
           const normalizedInstruction = interpretation.normalizedInstruction || trimmed;
           const expanded = this.expandSmartCommand(normalizedInstruction);
           if (expanded !== normalizedInstruction) {
-            console.log('[SessionManager] Smart command expanded:', normalizedInstruction, '->', expanded);
+            mainLogger.info('[SessionManager] Smart command expanded:', normalizedInstruction, '->', expanded);
           }
           this.addRecentTurn({
             user: trimmed,
@@ -3888,18 +3834,18 @@ class SessionManager {
       const transcription = await transcriptionService.transcribe(audioBase64, mimeType, { durationMs, isPreview: true });
       const previewText = transcription.transcript.trim();
       if (previewText) {
-        console.log('[SessionManager] Live preview transcription:', previewText);
+        mainLogger.info('[SessionManager] Live preview transcription:', previewText);
         return previewText;
       }
       return '';
     } catch (error) {
-      console.warn('[SessionManager] Live preview transcription failed:', error);
+      mainLogger.warn('[SessionManager] Live preview transcription failed:', error);
       return '';
     }
   }
 
   private logTranscription(transcription: TranscriptionResult): void {
-    console.log('[SessionManager] Transcribed:', transcription.transcript, {
+    mainLogger.info('[SessionManager] Transcribed:', transcription.transcript, {
       canonicalCommand: transcription.canonicalCommand,
       intent: transcription.intent,
       confidence: transcription.confidence,
@@ -3924,7 +3870,7 @@ class SessionManager {
       ttsService.speak(result.narration);
     } catch (error) {
       if (!this.isRunCurrent(runId)) return;
-      console.error('[SessionManager] describeScreen failed:', error);
+      mainLogger.error('[SessionManager] describeScreen failed:', error);
       ttsService.speakImmediate("Sorry, I couldn't see the screen right now. Check your Gemini API key in settings.");
     } finally {
       if (this.isRunCurrent(runId)) {
@@ -3950,7 +3896,7 @@ class SessionManager {
       ttsService.speak(result.narration);
     } catch (error) {
       if (!this.isRunCurrent(runId)) return;
-      console.error('[SessionManager] summarizeScreen failed:', error);
+      mainLogger.error('[SessionManager] summarizeScreen failed:', error);
       ttsService.speakImmediate("Sorry, I couldn't summarize the screen right now. Check your Gemini API key in settings.");
     } finally {
       if (this.isRunCurrent(runId)) {
@@ -4017,7 +3963,7 @@ class SessionManager {
       await ttsService.speakImmediate(result.answer);
     } catch (error) {
       if (!this.isRunCurrent(runId)) return;
-      console.error('[SessionManager] answerScreenQuestion failed:', error);
+      mainLogger.error('[SessionManager] answerScreenQuestion failed:', error);
       ttsService.speakImmediate("Sorry, I couldn't answer that from the screen right now. Check your Gemini API key in settings.");
     } finally {
       if (this.isRunCurrent(runId) && !handedOffToResearch) {
@@ -4037,7 +3983,7 @@ class SessionManager {
       return snapshot;
     } catch (error) {
       if (this.isRunCurrent(runId)) {
-        console.error('[SessionManager] Failed to capture browser snapshot:', error);
+        mainLogger.error('[SessionManager] Failed to capture browser snapshot:', error);
       }
       return null;
     }
@@ -4269,7 +4215,7 @@ class SessionManager {
         suggestions: hasExecutableSuggestion ? analysis.suggestions : fallback.suggestions,
       };
     } catch (error) {
-      console.warn('[SessionManager] Rescue analysis failed, using fallback:', error);
+      mainLogger.warn('[SessionManager] Rescue analysis failed, using fallback:', error);
       return this.buildFallbackBrowserRescueAnalysis(snapshot);
     }
   }
@@ -4447,7 +4393,7 @@ class SessionManager {
       await ttsService.speakImmediate(response);
     } catch (error) {
       if (!this.isRunCurrent(runId)) return;
-      console.error('[SessionManager] handleAssistiveBrowserCommand failed:', error);
+      mainLogger.error('[SessionManager] handleAssistiveBrowserCommand failed:', error);
       ttsService.speakImmediate("I couldn't inspect this page right now. Please try again.");
     } finally {
       if (this.isRunCurrent(runId)) {
@@ -4504,13 +4450,13 @@ class SessionManager {
       for (let i = 0; i < MAX_ITERATIONS; i++) {
         // Check cancellation
         if (!this.isRunCurrent(runId)) {
-          console.log('[SessionManager] Agentic loop cancelled at iteration', i);
+          mainLogger.info('[SessionManager] Agentic loop cancelled at iteration', i);
           return;
         }
 
         // Check timeout
         if (Date.now() - startTime > MAX_DURATION_MS) {
-          console.log('[SessionManager] Agentic loop timed out');
+          mainLogger.info('[SessionManager] Agentic loop timed out');
           cloudLog('WARNING', 'task_failed', {
             runId,
             goal: instruction,
@@ -4522,7 +4468,7 @@ class SessionManager {
           break;
         }
 
-        console.log(`[SessionManager] Agentic loop iteration ${i + 1}/${MAX_ITERATIONS}`);
+        mainLogger.info(`[SessionManager] Agentic loop iteration ${i + 1}/${MAX_ITERATIONS}`);
         await this.syncOverlayTargetFromBrowser(runId);
         if (!this.isRunCurrent(runId)) return;
 
@@ -4556,12 +4502,12 @@ class SessionManager {
           ]);
         } catch (e) {
           if (!this.isRunCurrent(runId)) return;
-          console.error('[SessionManager] Gemini call failed:', e);
+          mainLogger.error('[SessionManager] Gemini call failed:', e);
           history.push('FAILED: Gemini error — retrying with fresh screenshot');
           continue;
         }
         if (!this.isRunCurrent(runId)) return;
-        console.log('[SessionManager] Gemini result:', result.narration, result.action);
+        mainLogger.info('[SessionManager] Gemini result:', result.narration, result.action);
 
         // Broadcast to UI
         windowManager.broadcastToAll('sally:chat', {
@@ -4576,7 +4522,7 @@ class SessionManager {
 
         // If no action needed, task is complete
         if (!result.action || result.action.type === 'null') {
-          console.log('[SessionManager] Agentic loop complete — no more actions');
+          mainLogger.info('[SessionManager] Agentic loop complete - no more actions');
           cloudLog('INFO', 'task_completed', {
             runId,
             goal: instruction,
@@ -4592,7 +4538,7 @@ class SessionManager {
         // Execute the action
         const actionResult = await browserService.executeAction(result.action);
         if (!this.isRunCurrent(runId)) return;
-        console.log('[SessionManager] Action result:', actionResult);
+        mainLogger.info('[SessionManager] Action result:', actionResult);
 
         // Include success/failure status so Gemini can adapt
         const SUCCESS_PREFIXES = ['Navigated to', 'Clicked', 'Typed', 'Selected', 'Pressed', 'Hovered', 'Focused', 'Checked', 'Unchecked', 'Scrolled', 'Went back', 'Waited'];
@@ -4612,7 +4558,7 @@ class SessionManager {
       }
     } catch (error) {
       if (!this.isRunCurrent(runId)) return;
-      console.error('[SessionManager] Agentic browse failed:', error);
+      mainLogger.error('[SessionManager] Agentic browse failed:', error);
       cloudLog('ERROR', 'task_failed', {
         runId,
         goal: instruction,
@@ -4698,7 +4644,7 @@ class SessionManager {
           break;
         }
 
-        console.log(`[SessionManager] Planned loop iteration ${i + 1}/${MAX_ITERATIONS}`, {
+        mainLogger.info(`[SessionManager] Planned loop iteration ${i + 1}/${MAX_ITERATIONS}`, {
           goal: context.goal,
           subtask: context.activeSubtask,
           planSummary: context.planSummary,
@@ -4802,7 +4748,7 @@ class SessionManager {
             if (!this.isRunCurrent(runId)) {
               return;
             }
-            console.warn('[SessionManager] Planner refresh failed, continuing with current plan:', error);
+            mainLogger.warn('[SessionManager] Planner refresh failed, continuing with current plan:', error);
             forcePlanReason = null;
           }
         }
@@ -4846,7 +4792,7 @@ class SessionManager {
             if (!this.isRunCurrent(runId)) {
               return;
             }
-            console.error('[SessionManager] Gemini call failed:', error);
+            mainLogger.error('[SessionManager] Gemini call failed:', error);
             context.failureCount += 1;
             context.lastFailure = error instanceof Error ? error.message : String(error);
             this.recordTaskHistory(context, `FAILED: Gemini error - ${context.lastFailure}`);
@@ -4858,7 +4804,7 @@ class SessionManager {
         }
 
         if (!this.isRunCurrent(runId)) return;
-        console.log('[SessionManager] Gemini result:', result.narration, result.action);
+        mainLogger.info('[SessionManager] Gemini result:', result.narration, result.action);
 
         if (result.narration) {
           this.broadcastChat('assistant', result.narration);
@@ -4899,7 +4845,7 @@ class SessionManager {
 
         const actionResult = await this.executeBrowserActionWithPreview(actionToExecute, snapshot, runId);
         if (!this.isRunCurrent(runId)) return;
-        console.log('[SessionManager] Action result:', actionResult);
+        mainLogger.info('[SessionManager] Action result:', actionResult);
 
         const succeeded = this.didActionSucceed(actionResult);
         const actionDesc = this.describeAction(actionToExecute, actionResult);
@@ -4942,7 +4888,7 @@ class SessionManager {
       }
     } catch (error) {
       if (!this.isRunCurrent(runId)) return;
-      console.error('[SessionManager] Agentic browse failed:', error);
+      mainLogger.error('[SessionManager] Agentic browse failed:', error);
       context.status = 'failed';
       cloudLog('ERROR', 'task_failed', {
         runId,

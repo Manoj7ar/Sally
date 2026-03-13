@@ -4,6 +4,8 @@ import ConfigWindow from './windows/config/ConfigWindow';
 import SallyBarWindow from './windows/sallyBar/SallyBarWindow';
 import BorderOverlay from './windows/borderOverlay/BorderOverlay';
 import BrowserWindow from './windows/browser/BrowserWindow';
+import ToastViewport from './components/ToastViewport';
+import { rendererLogger } from './lib/logger';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
@@ -13,7 +15,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[ErrorBoundary]', error, info);
+    rendererLogger.error('[ErrorBoundary]', error, info);
   }
 
   render() {
@@ -67,8 +69,25 @@ function App() {
 
   if (windowType === 'borderOverlay') return <ErrorBoundary><BorderOverlay /></ErrorBoundary>;
   if (windowType === 'sallyBar') return <ErrorBoundary><SallyBarWindow /></ErrorBoundary>;
-  if (windowType === 'browser') return <ErrorBoundary><BrowserWindow /></ErrorBoundary>;
-  return <ErrorBoundary><ConfigWindow /></ErrorBoundary>;
+  if (windowType === 'browser') {
+    return (
+      <ErrorBoundary>
+        <>
+          <BrowserWindow />
+          <ToastViewport />
+        </>
+      </ErrorBoundary>
+    );
+  }
+
+  return (
+    <ErrorBoundary>
+      <>
+        <ConfigWindow />
+        <ToastViewport />
+      </>
+    </ErrorBoundary>
+  );
 }
 
 export default App;

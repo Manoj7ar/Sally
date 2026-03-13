@@ -21,7 +21,7 @@ export default defineConfig([
     },
   },
   {
-    files: ['electron/**/*.ts', 'scripts/**/*.{ts,js,mjs}', 'vite.config.ts', 'eslint.config.js'],
+    files: ['electron/**/*.ts', 'scripts/**/*.{ts,js,mjs}', 'tests/**/*.ts', 'vite.config.ts', 'vitest.config.ts', 'eslint.config.js'],
     extends: [
       js.configs.recommended,
       ...tseslint.configs.recommended,

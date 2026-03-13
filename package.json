@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Use any website with just your voice - accessibility agent for blind users",
+  "description": "Use any website with just your voice - voice-first accessibility agent for motor impairments and RSI",
   "main": "dist-electron/electron/main/index.js",
   "engines": {
     "node": ">=20"
@@ -15,16 +15,17 @@
     "build:electron": "tsc -p electron/tsconfig.json && tsc -p electron/preload/tsconfig.json && node -e \"require('fs').mkdirSync('dist-electron/electron/preload',{recursive:true});require('fs').writeFileSync('dist-electron/electron/preload/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\"",
     "build": "npm run build:electron && vite build",
     "preview": "npm run build && electron .",
-    "lint": "eslint src electron shared scripts vite.config.ts eslint.config.js",
+    "lint": "eslint src electron shared scripts tests vite.config.ts vitest.config.ts eslint.config.js",
+    "test": "vitest",
+    "test:run": "vitest run",
     "typecheck": "npm run build:electron && tsc -b",
     "verify:desktop": "tsx scripts/desktop-doctor.ts",
     "build:check": "npm run build:electron",
-    "check": "npm run lint && npm run typecheck && npm run verify:desktop && npm run build && node --check sally-backend/index.js"
+    "check": "npm run lint && npm run typecheck && npm run test:run && npm run verify:desktop && npm run build && node --check sally-backend/index.js"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",
     "electron-store": "^10.0.0",
-    "playwright-core": "^1.49.0",
     "uiohook-napi": "^1.5.4",
     "uuid": "^11.1.0"
   },
@@ -51,6 +52,7 @@
     "typescript": "~5.7.2",
     "typescript-eslint": "^8.18.2",
     "vite": "^6.0.5",
+    "vitest": "^3.2.4",
     "wait-on": "^8.0.3"
   },
   "build": {

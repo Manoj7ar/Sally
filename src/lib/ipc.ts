@@ -5,9 +5,25 @@ import type {
   IpcResponse,
   IpcBroadcast,
 } from '../../shared/types';
+import { rendererLogger } from './logger';
+import { showToast } from './toastBus';
 
 // Check if running in Electron
 export const isElectron = typeof window !== 'undefined' && window.electron !== undefined;
+
+function toUserFacingError(channel: string, error: unknown): string {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const sanitizedMessage = rawMessage
+    .replace(/^Error invoking remote method '[^']+':\s*/i, '')
+    .replace(/^Error:\s*/i, '')
+    .trim();
+
+  if (!sanitizedMessage) {
+    return `Failed to complete ${channel}.`;
+  }
+
+  return sanitizedMessage;
+}
 
 // Type-safe invoke
 export async function invoke<T extends keyof IpcChannels>(
@@ -15,10 +31,21 @@ export async function invoke<T extends keyof IpcChannels>(
   ...args: IpcRequest<T> extends void ? [] : [IpcRequest<T>]
 ): Promise<IpcResponse<T>> {
   if (!isElectron) {
-    console.warn(`IPC not available (not in Electron): ${channel}`);
+    rendererLogger.warn(`IPC not available (not in Electron): ${channel}`);
     throw new Error('Not running in Electron');
   }
-  return window.electron.invoke(channel, args[0]);
+
+  try {
+    return await window.electron.invoke(channel, args[0]);
+  } catch (error) {
+    rendererLogger.error(`[IPC] ${String(channel)} failed`, error);
+    showToast({
+      tone: 'error',
+      title: 'Action failed',
+      description: toUserFacingError(String(channel), error),
+    });
+    throw error;
+  }
 }
 
 // Type-safe send (fire-and-forget)
@@ -27,7 +54,7 @@ export function send<T extends keyof IpcChannels>(
   ...args: IpcRequest<T> extends void ? [] : [IpcRequest<T>]
 ): void {
   if (!isElectron) {
-    console.warn(`IPC not available (not in Electron): ${channel}`);
+    rendererLogger.warn(`IPC not available (not in Electron): ${channel}`);
     return;
   }
   window.electron.send(channel, args[0]);
@@ -39,7 +66,7 @@ export function subscribe<T extends keyof IpcChannels>(
   callback: (data: IpcBroadcast<T>) => void
 ): () => void {
   if (!isElectron) {
-    console.warn(`IPC not available (not in Electron): ${channel}`);
+    rendererLogger.warn(`IPC not available (not in Electron): ${channel}`);
     return () => {};
   }
   return window.electron.on(channel, (_event, data) => {

@@ -1,6 +1,8 @@
 // Sally constants
 
 export const GEMINI_MODEL = 'gemini-2.5-flash';
+export const ELEVENLABS_VOICE_ID = 'EXAVITQu4vr4xnSDxMaL';
+export const ELEVENLABS_MODEL_ID = 'eleven_turbo_v2_5';
 
 export const CONFIG_WINDOW = {
   width: 700,
@@ -32,7 +34,6 @@ export const SALLY_BAR = {
 export const STORE_KEYS = {
   WINDOW_STATE: 'windowState',
   AUDIO_DEVICE: 'audioDevice',
-  ANTHROPIC_API_KEY_ENCRYPTED: 'anthropicApiKeyEncrypted',
   ELEVENLABS_API_KEY: 'elevenLabsApiKey',
   PROVIDER: 'provider',
   SOUND_EFFECTS_ENABLED: 'soundEffectsEnabled',

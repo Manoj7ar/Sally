@@ -55,5 +55,3 @@ const electronAPI: ElectronAPI = {
 // Expose to renderer
 contextBridge.exposeInMainWorld('electron', electronAPI);
 
-// Log successful preload
-console.log('Preload script loaded');

@@ -1,3 +1,5 @@
+import { mainLogger } from '../utils/logger.js';
+
 const GOOGLE_SEARCH_BASE = 'https://www.google.com/search?hl=en&q=';
 const GOOGLE_LUCKY_BASE = 'https://www.google.com/search?btnI=I&hl=en&q=';
 const RESOLVE_TIMEOUT_MS = 6000;
@@ -169,7 +171,7 @@ async function tryCompanyWebsiteGuess(companyName: string): Promise<string | nul
         return finalUrl;
       }
     } catch (error) {
-      console.warn('[DestinationResolver] Company website guess failed for candidate:', candidate, error);
+      mainLogger.warn('[DestinationResolver] Company website guess failed for candidate:', candidate, error);
     }
   }
 
@@ -217,7 +219,7 @@ class DestinationResolverService {
           return { url: resolvedUrl, via: 'resolved' };
         }
       } catch (error) {
-        console.warn('[DestinationResolver] Google destination resolution failed for query:', query, error);
+        mainLogger.warn('[DestinationResolver] Google destination resolution failed for query:', query, error);
       }
     }
 

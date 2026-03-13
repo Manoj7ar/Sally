@@ -6,6 +6,8 @@ import { sessionManager } from './managers/sessionManager.js';
 import { browserService } from './services/browserService.js';
 import { windowManager } from './windowManager.js';
 import { store, STORE_KEYS } from './utils/store.js';
+import { mainLogger } from './utils/logger.js';
+import type { BrowserActionRequest } from '../../shared/types.js';
 
 export function registerIpcHandlers(): void {
   // ── Config ──
@@ -176,17 +178,7 @@ export function registerIpcHandlers(): void {
     };
   });
 
-  ipcMain.handle('browser:execute-action', async (_e, action: {
-    type: string;
-    selector?: string;
-    value?: string;
-    url?: string;
-    index?: number;
-    tabId?: string;
-    targetId?: string;
-    framePath?: number[];
-    shadowPath?: number[];
-  }) => {
+  ipcMain.handle('browser:execute-action', async (_e, action: BrowserActionRequest) => {
     return browserService.executeAction(action);
   });
 
@@ -217,5 +209,5 @@ export function registerIpcHandlers(): void {
     windowManager.showSallyBar();
   });
 
-  console.log('IPC handlers registered');
+  mainLogger.info('IPC handlers registered');
 }

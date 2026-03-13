@@ -81,8 +81,26 @@ export interface BrowserUiState {
   canGoForward: boolean;
 }
 
-export interface BrowserActionRequest {
-  type: string;
+export type BrowserActionType =
+  | 'navigate'
+  | 'click'
+  | 'fill'
+  | 'type'
+  | 'select'
+  | 'press'
+  | 'hover'
+  | 'focus'
+  | 'check'
+  | 'uncheck'
+  | 'scroll'
+  | 'scroll_up'
+  | 'back'
+  | 'wait'
+  | 'open_tab'
+  | 'switch_tab'
+  | 'null';
+
+interface BrowserActionFields {
   selector?: string;
   value?: string;
   url?: string;
@@ -92,6 +110,10 @@ export interface BrowserActionRequest {
   framePath?: number[];
   shadowPath?: number[];
 }
+
+export type BrowserActionRequest = BrowserActionFields & {
+  type: BrowserActionType;
+};
 
 export interface BrowserDebugSnapshot {
   pageUrl: string;

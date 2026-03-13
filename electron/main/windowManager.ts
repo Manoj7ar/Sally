@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { BROWSER_WINDOW, CONFIG_WINDOW, SALLY_BAR } from './utils/constants.js';
 import { store, STORE_KEYS } from './utils/store.js';
 import type { OverlayHighlightPayload, SallyBarLayout } from '../../shared/types.js';
+import { mainLogger } from './utils/logger.js';
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const WAITING_OVERLAY_MESSAGE = 'Agent is waiting for your reply';
@@ -26,7 +27,7 @@ class WindowManager {
   private attachWindowDiagnostics(win: BrowserWindow, name: string): void {
     win.webContents.on('console-message', (_event, level, message) => {
       const levelLabel = level === 3 ? 'error' : level === 2 ? 'warn' : 'log';
-      console.log(`[Renderer:${name}:${levelLabel}] ${message}`);
+      mainLogger.debug(`[Renderer:${name}:${levelLabel}] ${message}`);
     });
   }
 

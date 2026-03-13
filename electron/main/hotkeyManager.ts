@@ -4,6 +4,7 @@ import { uIOhook, UiohookKey, type UiohookKeyboardEvent } from 'uiohook-napi';
 import { microphoneManager } from './managers/microphoneManager.js';
 import { windowManager } from './windowManager.js';
 import { sessionManager } from './managers/sessionManager.js';
+import { mainLogger } from './utils/logger.js';
 
 const PUSH_TO_TALK_KEY = UiohookKey.AltRight;
 const MIN_HOLD_DURATION = 300;
@@ -42,24 +43,24 @@ class HotkeyManager {
   private releaseWatcher: ChildProcess | null = null;
 
   register(): void {
-    console.log(`Registering push-to-talk hotkey (${PUSH_TO_TALK_LABEL})`);
+    mainLogger.info(`Registering push-to-talk hotkey (${PUSH_TO_TALK_LABEL})`);
 
     uIOhook.on('keydown', (e) => {
       if (!this.isPushToTalkKey(e)) return;
 
       const now = Date.now();
       if (now - this.lastReleaseTime <= RESTART_GUARD_MS) {
-        console.warn(`[Hotkey] Ignoring ${PUSH_TO_TALK_LABEL} bounce immediately after release`);
+        mainLogger.warn(`[Hotkey] Ignoring ${PUSH_TO_TALK_LABEL} bounce immediately after release`);
         return;
       }
 
       if (this.isHotkeyPressed) {
-        console.warn(`[Hotkey] Ignoring duplicate ${PUSH_TO_TALK_LABEL} keydown while already pressed`);
+        mainLogger.warn(`[Hotkey] Ignoring duplicate ${PUSH_TO_TALK_LABEL} keydown while already pressed`);
         return;
       }
 
       if (microphoneManager.isMuted()) {
-        console.log(`[Hotkey] ${PUSH_TO_TALK_LABEL} pressed while mic is muted`);
+        mainLogger.info(`[Hotkey] ${PUSH_TO_TALK_LABEL} pressed while mic is muted`);
         windowManager.showSallyBar();
         return;
       }
@@ -84,9 +85,9 @@ class HotkeyManager {
     try {
       uIOhook.start();
       this.isStarted = true;
-      console.log(`Push-to-talk hotkey registered (${PUSH_TO_TALK_LABEL})`);
+      mainLogger.info(`Push-to-talk hotkey registered (${PUSH_TO_TALK_LABEL})`);
     } catch (error) {
-      console.error('Failed to start uIOhook:', error);
+      mainLogger.error('Failed to start uIOhook:', error);
     }
   }
 
@@ -110,20 +111,20 @@ class HotkeyManager {
   }
 
   private onKeyDown(): void {
-    console.log(`[Hotkey] ${PUSH_TO_TALK_LABEL} pressed - start recording`);
+    mainLogger.info(`[Hotkey] ${PUSH_TO_TALK_LABEL} pressed - start recording`);
     sessionManager.beginListeningFromHotkey();
     this.sendHotkeyMessage('hotkey:start-recording', { ensureVisible: true, syncState: true });
   }
 
   private onKeyUp(): void {
-    console.log(`[Hotkey] ${PUSH_TO_TALK_LABEL} released - stop recording`);
+    mainLogger.info(`[Hotkey] ${PUSH_TO_TALK_LABEL} released - stop recording`);
     // Immediately transition to processing state so the UI updates instantly
     sessionManager.setState('processing');
     this.sendHotkeyMessage('hotkey:stop-recording');
   }
 
   private onCancel(): void {
-    console.log('[Hotkey] Short press - cancelling');
+    mainLogger.info('[Hotkey] Short press - cancelling');
     sessionManager.setIdle();
     this.sendHotkeyMessage('hotkey:cancel-recording');
   }
@@ -165,7 +166,7 @@ class HotkeyManager {
       if (!text.includes('released')) return;
       if (!this.isHotkeyPressed) return;
 
-      console.warn('[Hotkey] Physical Right Alt release detected by fallback watcher');
+      mainLogger.warn('[Hotkey] Physical Right Alt release detected by fallback watcher');
       this.processKeyRelease();
     });
 

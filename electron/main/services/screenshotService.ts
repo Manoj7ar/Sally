@@ -1,5 +1,6 @@
 // Screenshot service - captures screen via Electron desktopCapturer
 import { desktopCapturer, screen } from 'electron';
+import { mainLogger } from '../utils/logger.js';
 
 class ScreenshotService {
   private resolveTargetDisplay(displayId?: number | null) {
@@ -31,7 +32,7 @@ class ScreenshotService {
     const displayIdString = String(targetDisplay.id);
     const selectedSource = sources.find((source) => source.display_id === displayIdString) || sources[0];
     const base64 = selectedSource.thumbnail.toPNG().toString('base64');
-    console.log('[Screenshot] Captured display:', {
+    mainLogger.info('[Screenshot] Captured display:', {
       requestedDisplayId: displayIdString,
       sourceDisplayId: selectedSource.display_id,
       sourceName: selectedSource.name,

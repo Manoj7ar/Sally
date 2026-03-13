@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
 import { ipc } from '../../lib/ipc';
 import type { OverlayHighlightPayload } from '../../../shared/types';
+import { rendererLogger } from '../../lib/logger';
+import { THEME } from '../../theme/tokens';
 
-const OVERLAY_BLUE = '#2563EB';
-const SCRIM = 'rgba(2, 6, 23, 0.45)';
-const WAITING_SCRIM = 'rgba(2, 6, 23, 0.58)';
-const WAITING_PANEL = 'rgba(15, 23, 42, 0.8)';
-const WAITING_PANEL_BORDER = 'rgba(148, 163, 184, 0.28)';
-const DANGER_PANEL = 'rgba(127, 29, 29, 0.84)';
-const DANGER_PANEL_BORDER = 'rgba(248, 113, 113, 0.38)';
+const OVERLAY_BLUE = THEME.accent.primary;
+const SCRIM = THEME.overlay.scrim;
+const WAITING_SCRIM = THEME.overlay.waitingScrim;
+const WAITING_PANEL = THEME.overlay.panel;
+const WAITING_PANEL_BORDER = THEME.overlay.panelBorder;
+const DANGER_PANEL = THEME.overlay.dangerPanel;
+const DANGER_PANEL_BORDER = THEME.overlay.dangerPanelBorder;
 
 export default function BorderOverlay() {
   const [overlay, setOverlay] = useState<OverlayHighlightPayload | null>({ mode: 'border' });
@@ -42,7 +44,7 @@ export default function BorderOverlay() {
       setIsCancelling(true);
       await ipc.invoke('sally:cancel');
     } catch (error) {
-      console.error('Failed to cancel active task:', error);
+      rendererLogger.error('Failed to cancel active task:', error);
       setIsCancelling(false);
     }
   };
@@ -55,9 +57,9 @@ export default function BorderOverlay() {
     <>
       <style>{`
         @keyframes sallyTargetPulse {
-          0% { transform: scale(1); box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.55), 0 0 22px rgba(37, 99, 235, 0.35), 0 0 0 9999px ${SCRIM}; }
-          50% { transform: scale(1.006); box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.78), 0 0 34px rgba(37, 99, 235, 0.5), 0 0 0 9999px ${SCRIM}; }
-          100% { transform: scale(1); box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.55), 0 0 22px rgba(37, 99, 235, 0.35), 0 0 0 9999px ${SCRIM}; }
+          0% { transform: scale(1); box-shadow: 0 0 0 1px ${THEME.overlay.accentPulse}, 0 0 22px ${THEME.overlay.accentGlow}, 0 0 0 9999px ${SCRIM}; }
+          50% { transform: scale(1.006); box-shadow: 0 0 0 1px ${THEME.overlay.accentPulseStrong}, 0 0 34px ${THEME.overlay.accentGlowStrong}, 0 0 0 9999px ${SCRIM}; }
+          100% { transform: scale(1); box-shadow: 0 0 0 1px ${THEME.overlay.accentPulse}, 0 0 22px ${THEME.overlay.accentGlow}, 0 0 0 9999px ${SCRIM}; }
         }
       `}</style>
       <div
@@ -67,7 +69,7 @@ export default function BorderOverlay() {
           pointerEvents: 'none',
           border: `3px solid ${OVERLAY_BLUE}`,
           borderRadius: '12px',
-          boxShadow: 'inset 0 0 20px rgba(37, 99, 235, 0.3), 0 0 20px rgba(37, 99, 235, 0.2)',
+          boxShadow: `inset 0 0 20px ${THEME.overlay.accentInsetGlow}, 0 0 20px ${THEME.overlay.accentOuterGlow}`,
           zIndex: 999998,
           opacity: overlay && !isWaitingOverlay ? 1 : 0,
           transition: 'opacity 140ms ease',
@@ -98,13 +100,13 @@ export default function BorderOverlay() {
                 maxWidth: 320,
                 padding: '6px 10px',
                 borderRadius: 999,
-                background: 'rgba(15, 23, 42, 0.88)',
-                border: '1px solid rgba(96, 165, 250, 0.55)',
-                color: 'rgba(255,255,255,0.94)',
+                background: THEME.overlay.panelStrong,
+                border: `1px solid ${THEME.overlay.accentBorder}`,
+                color: THEME.text.mutedInverse,
                 fontSize: 11,
                 fontWeight: 600,
                 letterSpacing: '0.01em',
-                boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                boxShadow: THEME.shadow.overlayLabel,
                 pointerEvents: 'none',
                 zIndex: 1000000,
                 whiteSpace: 'nowrap',
@@ -147,12 +149,12 @@ export default function BorderOverlay() {
                 borderRadius: 18,
                 background: WAITING_PANEL,
                 border: `1px solid ${WAITING_PANEL_BORDER}`,
-                color: 'rgba(255,255,255,0.96)',
+                color: THEME.text.strongInverse,
                 textAlign: 'center',
                 fontSize: 18,
                 fontWeight: 700,
                 letterSpacing: '0.01em',
-                boxShadow: '0 28px 60px rgba(2, 6, 23, 0.38)',
+                boxShadow: THEME.shadow.overlayPanel,
               }}
             >
               {overlay.message}
@@ -166,13 +168,13 @@ export default function BorderOverlay() {
                 border: `1px solid ${DANGER_PANEL_BORDER}`,
                 borderRadius: 18,
                 background: DANGER_PANEL,
-                color: 'rgba(255,255,255,0.96)',
+                color: THEME.text.strongInverse,
                 padding: '16px 22px',
                 fontSize: 16,
                 fontWeight: 700,
                 letterSpacing: '0.01em',
                 cursor: isCancelling ? 'default' : 'pointer',
-                boxShadow: '0 24px 54px rgba(69, 10, 10, 0.28)',
+                boxShadow: THEME.shadow.overlayDanger,
                 opacity: isCancelling ? 0.72 : 1,
               }}
             >

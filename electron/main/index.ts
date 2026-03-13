@@ -11,6 +11,7 @@ import { sessionManager } from './managers/sessionManager.js';
 import { browserService } from './services/browserService.js';
 import { cloudLogger } from './services/cloudLogger.js';
 import { hotkeyManager } from './hotkeyManager.js';
+import { mainLogger } from './utils/logger.js';
 
 let quitAfterFlush = false;
 
@@ -25,7 +26,7 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
-  console.log('Sally starting...');
+  mainLogger.info('Sally starting...');
 
   // Register IPC handlers
   registerIpcHandlers();
@@ -39,7 +40,7 @@ app.whenReady().then(async () => {
     if (trusted) {
       hotkeyManager.register();
     } else {
-      console.log('Accessibility permission not granted - hotkeys disabled');
+      mainLogger.info('Accessibility permission not granted - hotkeys disabled');
     }
   } else {
     hotkeyManager.register();
@@ -68,7 +69,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   void cloudLogger.shutdown()
     .catch((error) => {
-      console.error('[CloudLogger] Failed to flush logs during shutdown:', error);
+      mainLogger.error('[CloudLogger] Failed to flush logs during shutdown:', error);
     })
     .finally(() => {
       app.quit();

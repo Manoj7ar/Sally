@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ipc } from '../../lib/ipc';
+import { rendererLogger } from '../../lib/logger';
+import { THEME } from '../../theme/tokens';
 import type { SallyConfig } from '../../../shared/types';
 
 // ── Reusable Components ──
@@ -8,8 +10,8 @@ function Card({ children, style }: { children: React.ReactNode; style?: React.CS
   return (
     <div
       style={{
-        background: '#F9F9FB',
-        border: '1px solid #E8E8EC',
+        background: THEME.surface.muted,
+        border: `1px solid ${THEME.border.subtle}`,
         borderRadius: 12,
         padding: 20,
         marginBottom: 16,
@@ -36,20 +38,20 @@ function CardHeader({
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: description ? 12 : 8 }}>
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <h3 style={{ fontSize: 14, fontWeight: 600, color: '#1a1a1e', margin: 0 }}>{title}</h3>
+          <h3 style={{ fontSize: 14, fontWeight: 600, color: THEME.text.primary, margin: 0 }}>{title}</h3>
           {indicator && (
             <span
               style={{
                 width: 8,
                 height: 8,
                 borderRadius: '50%',
-                background: indicator === 'green' ? '#22C55E' : '#D1D5DB',
+                background: indicator === 'green' ? THEME.status.success : THEME.border.muted,
               }}
             />
           )}
         </div>
         {description && (
-          <p style={{ fontSize: 12, color: '#6B7280', margin: '4px 0 0 0' }}>{description}</p>
+          <p style={{ fontSize: 12, color: THEME.text.secondary, margin: '4px 0 0 0' }}>{description}</p>
         )}
       </div>
       {right}
@@ -76,16 +78,16 @@ function KeyInput({
         width: '100%',
         padding: '8px 12px',
         borderRadius: 8,
-        border: '1px solid #E8E8EC',
-        background: '#fff',
-        color: '#1a1a1e',
+        border: `1px solid ${THEME.border.subtle}`,
+        background: THEME.surface.base,
+        color: THEME.text.primary,
         fontSize: 13,
         fontFamily: 'monospace',
         outline: 'none',
         boxSizing: 'border-box',
       }}
-      onFocus={(e) => { e.target.style.borderColor = '#2563EB'; }}
-      onBlur={(e) => { e.target.style.borderColor = '#E8E8EC'; }}
+      onFocus={(e) => { e.target.style.borderColor = THEME.accent.primary; }}
+      onBlur={(e) => { e.target.style.borderColor = THEME.border.subtle; }}
     />
   );
 }
@@ -107,8 +109,8 @@ function PrimaryButton({
         padding: '7px 16px',
         borderRadius: 8,
         border: 'none',
-        background: disabled ? '#DBEAFE' : '#2563EB',
-        color: disabled ? '#93C5FD' : '#fff',
+        background: disabled ? THEME.accent.primaryDisabledBg : THEME.accent.primary,
+        color: disabled ? THEME.accent.primaryDisabledText : THEME.text.inverse,
         fontSize: 13,
         fontWeight: 500,
         cursor: disabled ? 'default' : 'pointer',
@@ -116,13 +118,13 @@ function PrimaryButton({
       }}
       onMouseEnter={(e) => {
         if (!disabled) {
-          e.currentTarget.style.background = '#1D4ED8';
+          e.currentTarget.style.background = THEME.accent.primaryHover;
           e.currentTarget.style.transform = 'scale(1.03)';
         }
       }}
       onMouseLeave={(e) => {
         if (!disabled) {
-          e.currentTarget.style.background = '#2563EB';
+          e.currentTarget.style.background = THEME.accent.primary;
           e.currentTarget.style.transform = 'scale(1)';
         }
       }}
@@ -150,9 +152,9 @@ function SecondaryButton({
       style={{
         padding: '7px 16px',
         borderRadius: 8,
-        border: '1px solid #E8E8EC',
-        background: '#fff',
-        color: disabled ? '#D1D5DB' : danger ? '#DC2626' : '#6B7280',
+        border: `1px solid ${THEME.border.subtle}`,
+        background: THEME.surface.base,
+        color: disabled ? THEME.border.muted : danger ? THEME.status.danger : THEME.text.secondary,
         fontSize: 13,
         fontWeight: 500,
         cursor: disabled ? 'default' : 'pointer',
@@ -160,15 +162,15 @@ function SecondaryButton({
       }}
       onMouseEnter={(e) => {
         if (!disabled) {
-          e.currentTarget.style.background = '#F5F5F5';
-          e.currentTarget.style.color = danger ? '#EF4444' : '#1a1a1e';
+          e.currentTarget.style.background = THEME.surface.hover;
+          e.currentTarget.style.color = danger ? THEME.status.dangerHover : THEME.text.primary;
           e.currentTarget.style.transform = 'scale(1.03)';
         }
       }}
       onMouseLeave={(e) => {
         if (!disabled) {
-          e.currentTarget.style.background = '#fff';
-          e.currentTarget.style.color = danger ? '#DC2626' : '#6B7280';
+          e.currentTarget.style.background = THEME.surface.base;
+          e.currentTarget.style.color = danger ? THEME.status.danger : THEME.text.secondary;
           e.currentTarget.style.transform = 'scale(1)';
         }
       }}
@@ -231,7 +233,7 @@ export default function ConfigWindow() {
         setBackendHealth({ status: 'idle', model: null });
       }
     } catch (e) {
-      console.error('Failed to load config:', e);
+      rendererLogger.error('Failed to load config:', e);
     }
   }, [checkBackendHealth]);
 
@@ -295,8 +297,8 @@ export default function ConfigWindow() {
 
   if (!config) {
     return (
-      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff' }}>
-        <p style={{ color: '#6B7280' }}>Loading...</p>
+      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: THEME.surface.base }}>
+        <p style={{ color: THEME.text.secondary }}>Loading...</p>
       </div>
     );
   }
@@ -305,7 +307,7 @@ export default function ConfigWindow() {
   const backendUrlChanged = geminiBackendUrl.trim() !== config.geminiBackendUrl;
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#FFFFFF', color: '#1a1a1e' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: THEME.surface.base, color: THEME.text.primary }}>
       {/* Title bar drag region */}
       <div
         className="drag-region"
@@ -319,8 +321,8 @@ export default function ConfigWindow() {
         }}
       >
         <div style={{ textAlign: 'center' }}>
-          <h1 style={{ fontSize: 18, fontWeight: 700, margin: 0, letterSpacing: '-0.02em', color: '#1a1a1e' }}>Sally</h1>
-          <p style={{ fontSize: 11, color: '#6B7280', margin: '2px 0 0 0' }}>Voice-first AI assistant</p>
+          <h1 style={{ fontSize: 18, fontWeight: 700, margin: 0, letterSpacing: '-0.02em', color: THEME.text.primary }}>Sally</h1>
+          <p style={{ fontSize: 11, color: THEME.text.secondary, margin: '2px 0 0 0' }}>Voice-first AI assistant</p>
         </div>
       </div>
 
@@ -331,27 +333,27 @@ export default function ConfigWindow() {
           data-testid="launch-assistant-button"
           style={{
             flex: 1, padding: '10px 0', borderRadius: 10,
-            border: '1px solid rgba(37,99,235,0.3)',
-            background: 'rgba(37,99,235,0.08)',
-            color: '#2563EB', fontSize: 13, fontWeight: 600,
+            border: `1px solid ${THEME.accent.primaryBorder}`,
+            background: THEME.accent.primarySoft,
+            color: THEME.accent.primary, fontSize: 13, fontWeight: 600,
             cursor: 'pointer', transition: 'all 0.15s, transform 0.15s',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'rgba(37,99,235,0.14)';
+            e.currentTarget.style.background = THEME.accent.primarySoftHover;
             e.currentTarget.style.transform = 'scale(1.02)';
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'rgba(37,99,235,0.08)';
+            e.currentTarget.style.background = THEME.accent.primarySoft;
             e.currentTarget.style.transform = 'scale(1)';
           }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="3" stroke="#2563EB" strokeWidth="2" />
-            <line x1="12" y1="2" x2="12" y2="7" stroke="#2563EB" strokeWidth="2" strokeLinecap="round" />
-            <line x1="12" y1="17" x2="12" y2="22" stroke="#2563EB" strokeWidth="2" strokeLinecap="round" />
-            <line x1="2" y1="12" x2="7" y2="12" stroke="#2563EB" strokeWidth="2" strokeLinecap="round" />
-            <line x1="17" y1="12" x2="22" y2="12" stroke="#2563EB" strokeWidth="2" strokeLinecap="round" />
+            <circle cx="12" cy="12" r="3" stroke={THEME.accent.primary} strokeWidth="2" />
+            <line x1="12" y1="2" x2="12" y2="7" stroke={THEME.accent.primary} strokeWidth="2" strokeLinecap="round" />
+            <line x1="12" y1="17" x2="12" y2="22" stroke={THEME.accent.primary} strokeWidth="2" strokeLinecap="round" />
+            <line x1="2" y1="12" x2="7" y2="12" stroke={THEME.accent.primary} strokeWidth="2" strokeLinecap="round" />
+            <line x1="17" y1="12" x2="22" y2="12" stroke={THEME.accent.primary} strokeWidth="2" strokeLinecap="round" />
           </svg>
           Launch Assistant
         </button>
@@ -360,26 +362,26 @@ export default function ConfigWindow() {
           data-testid="open-browser-button"
           style={{
             flex: 1, padding: '10px 0', borderRadius: 10,
-            border: '1px solid rgba(14,165,233,0.26)',
-            background: 'rgba(14,165,233,0.08)',
-            color: '#0284C7', fontSize: 13, fontWeight: 600,
+            border: `1px solid ${THEME.accent.secondaryBorder}`,
+            background: THEME.accent.secondarySoft,
+            color: THEME.accent.secondary, fontSize: 13, fontWeight: 600,
             cursor: 'pointer', transition: 'all 0.15s, transform 0.15s',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'rgba(14,165,233,0.14)';
+            e.currentTarget.style.background = THEME.accent.secondarySoftHover;
             e.currentTarget.style.transform = 'scale(1.02)';
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'rgba(14,165,233,0.08)';
+            e.currentTarget.style.background = THEME.accent.secondarySoft;
             e.currentTarget.style.transform = 'scale(1)';
           }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <rect x="3" y="4" width="18" height="16" rx="3" stroke="#0284C7" strokeWidth="2" />
-            <path d="M3 8H21" stroke="#0284C7" strokeWidth="2" />
-            <circle cx="6.5" cy="6" r="1" fill="#0284C7" />
-            <circle cx="9.5" cy="6" r="1" fill="#0284C7" />
+            <rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="2" />
+            <path d="M3 8H21" stroke="currentColor" strokeWidth="2" />
+            <circle cx="6.5" cy="6" r="1" fill="currentColor" />
+            <circle cx="9.5" cy="6" r="1" fill="currentColor" />
           </svg>
           Open Browser
         </button>
@@ -398,7 +400,7 @@ export default function ConfigWindow() {
             indicator={config.hasGeminiKey ? 'green' : 'gray'}
           />
           <div style={{ marginBottom: 10 }}>
-            <label style={{ display: 'block', fontSize: 12, color: '#6B7280', marginBottom: 6 }}>Gemini API Key</label>
+            <label style={{ display: 'block', fontSize: 12, color: THEME.text.secondary, marginBottom: 6 }}>Gemini API Key</label>
             <KeyInput
               value={providerKey}
               onChange={setProviderKey}
@@ -419,7 +421,7 @@ export default function ConfigWindow() {
               </SecondaryButton>
             )}
             {testResult !== null && (
-              <span style={{ fontSize: 12, color: testResult ? '#16A34A' : '#DC2626', marginLeft: 4 }}>
+              <span style={{ fontSize: 12, color: testResult ? THEME.status.successText : THEME.status.danger, marginLeft: 4 }}>
                 {testResult ? 'Valid' : 'Invalid'}
               </span>
             )}
@@ -433,14 +435,14 @@ export default function ConfigWindow() {
           {/* TTS */}
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ fontSize: 13, fontWeight: 500, color: '#1a1a1e' }}>Text-to-Speech</span>
-              <span style={{ fontSize: 11, color: '#6B7280' }}>ElevenLabs</span>
+              <span style={{ fontSize: 13, fontWeight: 500, color: THEME.text.primary }}>Text-to-Speech</span>
+              <span style={{ fontSize: 11, color: THEME.text.secondary }}>ElevenLabs</span>
               <span
                 style={{
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  background: config.hasElevenLabsKey ? '#22C55E' : '#D1D5DB',
+                  background: config.hasElevenLabsKey ? THEME.status.success : THEME.border.muted,
                   marginLeft: 'auto',
                 }}
               />
@@ -459,24 +461,24 @@ export default function ConfigWindow() {
             </div>
           </div>
 
-          <div style={{ height: 1, background: '#E8E8EC', margin: '0 0 16px' }} />
+          <div style={{ height: 1, background: THEME.border.subtle, margin: '0 0 16px' }} />
 
           {/* STT */}
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ fontSize: 13, fontWeight: 500, color: '#1a1a1e' }}>Speech-to-Text</span>
-              <span style={{ fontSize: 11, color: '#6B7280' }}>Gemini 2.5 Flash</span>
+              <span style={{ fontSize: 13, fontWeight: 500, color: THEME.text.primary }}>Speech-to-Text</span>
+              <span style={{ fontSize: 11, color: THEME.text.secondary }}>Gemini 2.5 Flash</span>
               <span
                 style={{
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  background: config.hasGeminiKey ? '#22C55E' : '#D1D5DB',
+                  background: config.hasGeminiKey ? THEME.status.success : THEME.border.muted,
                   marginLeft: 'auto',
                 }}
               />
             </div>
-            <p style={{ fontSize: 12, color: '#6B7280', margin: '0 0 10px 0' }}>
+            <p style={{ fontSize: 12, color: THEME.text.secondary, margin: '0 0 10px 0' }}>
               Speech-to-text uses the Gemini API key configured above.
             </p>
           </div>
@@ -498,15 +500,15 @@ export default function ConfigWindow() {
                 width: '100%',
                 padding: '8px 12px',
                 borderRadius: 8,
-                border: '1px solid #E8E8EC',
-                background: '#fff',
-                color: '#1a1a1e',
+                border: `1px solid ${THEME.border.subtle}`,
+                background: THEME.surface.base,
+                color: THEME.text.primary,
                 fontSize: 13,
                 outline: 'none',
                 boxSizing: 'border-box',
               }}
-              onFocus={(e) => { e.target.style.borderColor = '#2563EB'; }}
-              onBlur={(e) => { e.target.style.borderColor = '#E8E8EC'; }}
+              onFocus={(e) => { e.target.style.borderColor = THEME.accent.primary; }}
+              onBlur={(e) => { e.target.style.borderColor = THEME.border.subtle; }}
             />
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -532,19 +534,19 @@ export default function ConfigWindow() {
                   height: 8,
                   borderRadius: '50%',
                   background:
-                    backendHealth.status === 'connected' ? '#22C55E' :
-                    backendHealth.status === 'failed' ? '#DC2626' :
-                    backendHealth.status === 'checking' ? '#CA8A04' :
-                    backendHealth.status === 'configured' ? '#2563EB' : '#D1D5DB',
+                    backendHealth.status === 'connected' ? THEME.status.success :
+                    backendHealth.status === 'failed' ? THEME.status.danger :
+                    backendHealth.status === 'checking' ? THEME.status.warning :
+                    backendHealth.status === 'configured' ? THEME.accent.primary : THEME.border.muted,
                 }}
               />
               <span style={{
                 fontSize: 11,
                 color:
-                  backendHealth.status === 'connected' ? '#16A34A' :
-                  backendHealth.status === 'failed' ? '#DC2626' :
-                  backendHealth.status === 'checking' ? '#CA8A04' :
-                  backendHealth.status === 'configured' ? '#2563EB' : '#6B7280',
+                  backendHealth.status === 'connected' ? THEME.status.successText :
+                  backendHealth.status === 'failed' ? THEME.status.danger :
+                  backendHealth.status === 'checking' ? THEME.status.warning :
+                  backendHealth.status === 'configured' ? THEME.accent.primary : THEME.text.secondary,
               }}>
                 {backendHealth.status === 'connected'
                   ? `Connected to Cloud Run${backendHealth.model ? ` (${backendHealth.model})` : ''}`
@@ -572,9 +574,9 @@ export default function ConfigWindow() {
               width: '100%',
               padding: '12px 14px',
               borderRadius: 10,
-              border: '1px solid #E8E8EC',
-              background: autoResearchScreenQuestions ? 'rgba(34,197,94,0.08)' : '#fff',
-              color: '#1a1a1e',
+              border: `1px solid ${THEME.border.subtle}`,
+              background: autoResearchScreenQuestions ? THEME.status.successSoft : THEME.surface.base,
+              color: THEME.text.primary,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -587,7 +589,7 @@ export default function ConfigWindow() {
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
                 Auto Research for Screen Questions
               </div>
-              <div style={{ fontSize: 12, color: '#6B7280' }}>
+              <div style={{ fontSize: 12, color: THEME.text.secondary }}>
                 {autoResearchScreenQuestions
                   ? 'When a visual question asks for more info, Sally can answer from the screenshot and then look it up on the web.'
                   : 'Sally answers screen questions from the screenshot only and does not auto-open the browser.'}
@@ -598,7 +600,7 @@ export default function ConfigWindow() {
                 width: 42,
                 height: 24,
                 borderRadius: 999,
-                background: autoResearchScreenQuestions ? '#22C55E' : '#D1D5DB',
+                background: autoResearchScreenQuestions ? THEME.status.success : THEME.border.muted,
                 position: 'relative',
                 flexShrink: 0,
                 transition: 'background 0.15s',
@@ -609,12 +611,12 @@ export default function ConfigWindow() {
                   width: 18,
                   height: 18,
                   borderRadius: '50%',
-                  background: '#fff',
+                  background: THEME.surface.base,
                   position: 'absolute',
                   top: 3,
                   left: autoResearchScreenQuestions ? 21 : 3,
                   transition: 'left 0.15s',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
+                  boxShadow: THEME.shadow.small,
                 }}
               />
             </div>
@@ -622,7 +624,7 @@ export default function ConfigWindow() {
         </Card>
 
         {/* Getting Started */}
-        <Card style={{ background: 'rgba(37,99,235,0.04)', borderColor: 'rgba(37,99,235,0.15)' }}>
+        <Card style={{ background: THEME.accent.primaryMuted, borderColor: THEME.accent.primaryBorder }}>
           <CardHeader title="Getting Started" />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {[
@@ -636,8 +638,8 @@ export default function ConfigWindow() {
                     width: 22,
                     height: 22,
                     borderRadius: '50%',
-                    background: 'rgba(37,99,235,0.12)',
-                    color: '#2563EB',
+                    background: THEME.accent.primarySoftHover,
+                    color: THEME.accent.primary,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -648,7 +650,7 @@ export default function ConfigWindow() {
                 >
                   {step.num}
                 </span>
-                <span style={{ fontSize: 13, color: '#1a1a1e' }}>{step.text}</span>
+                <span style={{ fontSize: 13, color: THEME.text.primary }}>{step.text}</span>
               </div>
             ))}
           </div>

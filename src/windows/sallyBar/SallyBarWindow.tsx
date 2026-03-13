@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ipc } from '../../lib/ipc';
+import { rendererLogger } from '../../lib/logger';
+import { THEME } from '../../theme/tokens';
 import WaveformView from './components/WaveformView';
 import type { AutoConfirmationListenPayload, SallyBarLayout, SallyState } from '../../../shared/types';
 import logoSrc from '../../../assets/branding/sally-logo.png';
 
 const SendIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-    <path d="M22 2L11 13" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
@@ -36,12 +38,12 @@ function MicIcon({ muted }: { muted: boolean }) {
 }
 
 const stateColors: Record<SallyState, string> = {
-  idle: '#94A3B8',
-  listening: '#22C55E',
-  processing: '#EAB308',
-  acting: '#2563EB',
-  speaking: '#A855F7',
-  awaiting_response: '#38BDF8',
+  idle: THEME.status.idle,
+  listening: THEME.status.success,
+  processing: THEME.status.warningBright,
+  acting: THEME.accent.primary,
+  speaking: THEME.status.speaking,
+  awaiting_response: THEME.status.awaiting,
 };
 
 const stateLabels: Record<Exclude<SallyState, 'idle'>, string> = {
@@ -52,12 +54,12 @@ const stateLabels: Record<Exclude<SallyState, 'idle'>, string> = {
   awaiting_response: 'Reply needed',
 };
 
-const ACCENT = '#2563EB';
-const PILL_BG = 'rgba(0, 0, 0, 0.9)';
+const ACCENT = THEME.accent.primary;
+const PILL_BG = THEME.glass.strong;
 const PILL_BLUR = 'blur(28px) saturate(140%)';
-const PILL_BORDER = '1px solid rgba(255,255,255,0.04)';
-const COMPOSER_BG = 'rgba(0, 0, 0, 0.82)';
-const COMPOSER_BORDER = '1px solid rgba(255,255,255,0.05)';
+const PILL_BORDER = `1px solid ${THEME.glass.border}`;
+const COMPOSER_BG = THEME.glass.medium;
+const COMPOSER_BORDER = `1px solid ${THEME.glass.border}`;
 const COMPOSER_WIDTH = 360;
 const PILL_WIDTH = 280;
 const TRANSCRIPT_WIDTH = 360;
@@ -323,7 +325,7 @@ export default function SallyBarWindow() {
 
           source.start(0);
         } catch (err) {
-          console.error('[TTS] Failed to play decoded audio:', err);
+          rendererLogger.error('[TTS] Failed to play decoded audio:', err);
           ipc.send('sally:tts-playback-error', {
             id,
             message: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
@@ -496,7 +498,7 @@ export default function SallyBarWindow() {
         setLiveTranscript(transcript.trim());
       }
     } catch (error) {
-      console.warn('Live transcript preview failed:', error);
+      rendererLogger.warn('Live transcript preview failed:', error);
     } finally {
       livePreviewRequestInFlightRef.current = false;
     }
@@ -610,7 +612,7 @@ export default function SallyBarWindow() {
         }, Math.max(confirmationOptions?.maxDurationMs ?? DEFAULT_CONFIRMATION_MAX_DURATION_MS, 1500));
       }
     } catch (error) {
-      console.error('Failed to start recording:', error);
+      rendererLogger.error('Failed to start recording:', error);
       cleanupRecordingUi();
       resetSignalLevels();
       stopLiveTranscriptPreview();
@@ -772,7 +774,7 @@ export default function SallyBarWindow() {
     if (isRecording) {
       return (
         <div style={{ width: 60, height: 18, flexShrink: 0 }}>
-          <WaveformView isActive={isRecording} audioLevel={audioLevel} dotCount={14} color="#22C55E" />
+          <WaveformView isActive={isRecording} audioLevel={audioLevel} dotCount={14} color={THEME.status.success} />
         </div>
       );
     }
@@ -785,7 +787,7 @@ export default function SallyBarWindow() {
             width: 12,
             height: 12,
             borderRadius: '50%',
-            border: '1.5px solid #EAB308',
+            border: `1.5px solid ${THEME.status.warningBright}`,
             borderTopColor: 'transparent',
             flexShrink: 0,
           }}
@@ -800,7 +802,7 @@ export default function SallyBarWindow() {
           width: 8,
           height: 8,
           borderRadius: '50%',
-          backgroundColor: isMicMuted ? '#F87171' : stateColors[state],
+          backgroundColor: isMicMuted ? THEME.status.dangerMuted : stateColors[state],
           flexShrink: 0,
         }}
       />
@@ -848,7 +850,7 @@ export default function SallyBarWindow() {
           backdropFilter: PILL_BLUR,
           WebkitBackdropFilter: PILL_BLUR,
           border: PILL_BORDER,
-          boxShadow: '0 16px 36px rgba(0,0,0,0.35)',
+          boxShadow: THEME.shadow.pill,
           borderRadius: 24,
           flexShrink: 0,
           // @ts-expect-error: Electron-specific
@@ -891,9 +893,9 @@ export default function SallyBarWindow() {
             alignItems: 'center',
             gap: 8,
             padding: isIdlePrompt ? '0 14px' : '0 12px',
-            background: isMicMuted ? 'rgba(127,29,29,0.38)' : 'rgba(0,0,0,0.38)',
-            border: isMicMuted ? '1px solid rgba(248,113,113,0.22)' : '1px solid rgba(255,255,255,0.05)',
-            color: '#FFFFFF',
+            background: isMicMuted ? THEME.status.dangerPanel : THEME.glass.light,
+            border: isMicMuted ? `1px solid ${THEME.status.dangerBorderSoft}` : `1px solid ${THEME.glass.border}`,
+            color: THEME.text.inverse,
             // @ts-expect-error: Electron-specific
             WebkitAppRegion: 'no-drag',
           }}
@@ -904,7 +906,7 @@ export default function SallyBarWindow() {
               style={{
                 fontSize: 11.5,
                 fontWeight: 600,
-                color: isMicMuted ? '#FECACA' : 'rgba(255,255,255,0.92)',
+                color: isMicMuted ? THEME.status.dangerSoftText : THEME.text.mutedInverse,
                 whiteSpace: 'nowrap',
                 overflow: isIdlePrompt ? 'visible' : 'hidden',
                 textOverflow: isIdlePrompt ? 'clip' : 'ellipsis',
@@ -925,9 +927,9 @@ export default function SallyBarWindow() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            background: isMicMuted ? 'rgba(239,68,68,0.18)' : 'rgba(0,0,0,0.32)',
-            border: isMicMuted ? '1px solid rgba(248,113,113,0.24)' : 'none',
-            color: isMicMuted ? '#FECACA' : 'rgba(255,255,255,0.82)',
+            background: isMicMuted ? THEME.status.dangerGlass : THEME.glass.button,
+            border: isMicMuted ? `1px solid ${THEME.status.dangerBorderSoftHover}` : 'none',
+            color: isMicMuted ? THEME.status.dangerSoftText : THEME.text.mutedInverse,
             cursor: 'pointer',
             flexShrink: 0,
             transition: 'background 0.15s, color 0.15s, transform 0.15s',
@@ -936,11 +938,11 @@ export default function SallyBarWindow() {
           }}
           onMouseEnter={(event) => {
             event.currentTarget.style.transform = 'scale(1.08)';
-            event.currentTarget.style.background = isMicMuted ? 'rgba(239,68,68,0.24)' : 'rgba(0,0,0,0.42)';
+            event.currentTarget.style.background = isMicMuted ? THEME.status.dangerGlassHover : THEME.glass.buttonHover;
           }}
           onMouseLeave={(event) => {
             event.currentTarget.style.transform = 'scale(1)';
-            event.currentTarget.style.background = isMicMuted ? 'rgba(239,68,68,0.18)' : 'rgba(0,0,0,0.32)';
+            event.currentTarget.style.background = isMicMuted ? THEME.status.dangerGlass : THEME.glass.button;
           }}
         >
           <MicIcon muted={isMicMuted} />
@@ -956,9 +958,9 @@ export default function SallyBarWindow() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            background: isComposerOpen ? 'rgba(37,99,235,0.22)' : 'rgba(0,0,0,0.32)',
-            border: isComposerOpen ? '1px solid rgba(96,165,250,0.26)' : 'none',
-            color: isComposerOpen ? '#DBEAFE' : 'rgba(255,255,255,0.82)',
+            background: isComposerOpen ? THEME.accent.primaryGlass : THEME.glass.button,
+            border: isComposerOpen ? `1px solid ${THEME.accent.primaryGlassBorder}` : 'none',
+            color: isComposerOpen ? THEME.accent.primaryDisabledBg : THEME.text.mutedInverse,
             cursor: 'pointer',
             flexShrink: 0,
             transition: 'background 0.15s, color 0.15s, transform 0.15s',
@@ -967,11 +969,11 @@ export default function SallyBarWindow() {
           }}
           onMouseEnter={(event) => {
             event.currentTarget.style.transform = 'scale(1.08)';
-            event.currentTarget.style.background = isComposerOpen ? 'rgba(37,99,235,0.28)' : 'rgba(0,0,0,0.42)';
+            event.currentTarget.style.background = isComposerOpen ? THEME.accent.primaryGlassHover : THEME.glass.buttonHover;
           }}
           onMouseLeave={(event) => {
             event.currentTarget.style.transform = 'scale(1)';
-            event.currentTarget.style.background = isComposerOpen ? 'rgba(37,99,235,0.22)' : 'rgba(0,0,0,0.32)';
+            event.currentTarget.style.background = isComposerOpen ? THEME.accent.primaryGlass : THEME.glass.button;
           }}
         >
           <KeyboardIcon />
@@ -987,9 +989,9 @@ export default function SallyBarWindow() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            background: isBusy ? 'rgba(239,68,68,0.14)' : 'rgba(0,0,0,0.32)',
+            background: isBusy ? THEME.status.dangerSoft : THEME.glass.button,
             border: 'none',
-            color: isBusy ? '#FECACA' : 'rgba(255,255,255,0.72)',
+            color: isBusy ? THEME.status.dangerSoftText : THEME.text.softInverse,
             cursor: 'pointer',
             flexShrink: 0,
             transition: 'background 0.15s, color 0.15s, transform 0.15s',
@@ -997,13 +999,13 @@ export default function SallyBarWindow() {
             WebkitAppRegion: 'no-drag',
           }}
           onMouseEnter={(event) => {
-            event.currentTarget.style.background = isBusy ? 'rgba(239,68,68,0.2)' : 'rgba(0,0,0,0.42)';
-            event.currentTarget.style.color = '#FFFFFF';
+            event.currentTarget.style.background = isBusy ? THEME.status.dangerSoftHover : THEME.glass.buttonHover;
+            event.currentTarget.style.color = THEME.text.inverse;
             event.currentTarget.style.transform = 'scale(1.08)';
           }}
           onMouseLeave={(event) => {
-            event.currentTarget.style.background = isBusy ? 'rgba(239,68,68,0.14)' : 'rgba(0,0,0,0.32)';
-            event.currentTarget.style.color = isBusy ? '#FECACA' : 'rgba(255,255,255,0.72)';
+            event.currentTarget.style.background = isBusy ? THEME.status.dangerSoft : THEME.glass.button;
+            event.currentTarget.style.color = isBusy ? THEME.status.dangerSoftText : THEME.text.softInverse;
             event.currentTarget.style.transform = 'scale(1)';
           }}
         >
@@ -1022,7 +1024,7 @@ export default function SallyBarWindow() {
             backdropFilter: PILL_BLUR,
             WebkitBackdropFilter: PILL_BLUR,
             border: COMPOSER_BORDER,
-            boxShadow: '0 18px 40px rgba(0,0,0,0.32)',
+            boxShadow: THEME.shadow.panel,
             display: 'flex',
             alignItems: 'center',
             gap: 10,
@@ -1036,9 +1038,9 @@ export default function SallyBarWindow() {
               width: 8,
               height: 8,
               borderRadius: '50%',
-              background: '#22C55E',
+              background: THEME.status.success,
               flexShrink: 0,
-              boxShadow: '0 0 12px rgba(34,197,94,0.35)',
+              boxShadow: `0 0 12px ${THEME.status.successGlow}`,
             }}
           />
           <div
@@ -1062,7 +1064,7 @@ export default function SallyBarWindow() {
                 paddingRight: 20,
                 fontSize: 12,
                 fontWeight: 500,
-                color: transcriptText ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.52)',
+                color: transcriptText ? THEME.text.mutedInverse : THEME.text.placeholderInverse,
                 transform: 'translateY(-1px)',
               }}
             >
@@ -1083,7 +1085,7 @@ export default function SallyBarWindow() {
             backdropFilter: PILL_BLUR,
             WebkitBackdropFilter: PILL_BLUR,
             border: COMPOSER_BORDER,
-            boxShadow: '0 18px 40px rgba(0,0,0,0.4)',
+            boxShadow: THEME.shadow.panelStrong,
             display: 'flex',
             flexDirection: 'column',
             gap: 10,
@@ -1091,7 +1093,7 @@ export default function SallyBarWindow() {
             WebkitAppRegion: 'no-drag',
           }}
         >
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.62)', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: THEME.text.subtleInverse, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
             Type to Sally
           </div>
 
@@ -1107,18 +1109,18 @@ export default function SallyBarWindow() {
                 flex: 1,
                 height: 38,
                 padding: '0 12px',
-                background: 'rgba(0,0,0,0.34)',
-                border: '1px solid rgba(255,255,255,0.08)',
+                background: THEME.glass.input,
+                border: `1px solid ${THEME.border.inverseSubtle}`,
                 borderRadius: 14,
-                color: '#FFFFFF',
+                color: THEME.text.inverse,
                 fontSize: 12.5,
                 outline: 'none',
               }}
               onFocus={(event) => {
-                event.target.style.borderColor = 'rgba(96,165,250,0.65)';
+                event.target.style.borderColor = THEME.glass.focusBorder;
               }}
               onBlur={(event) => {
-                event.target.style.borderColor = 'rgba(255,255,255,0.1)';
+                event.target.style.borderColor = THEME.border.inverseMuted;
               }}
             />
 
@@ -1129,22 +1131,23 @@ export default function SallyBarWindow() {
                 width: 38,
                 height: 38,
                 borderRadius: '50%',
-                background: inputText.trim() ? ACCENT : 'rgba(0,0,0,0.32)',
+                background: inputText.trim() ? ACCENT : THEME.glass.button,
                 border: 'none',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                color: THEME.text.inverse,
                 cursor: inputText.trim() ? 'pointer' : 'default',
                 flexShrink: 0,
                 transition: 'background 0.15s, transform 0.15s',
               }}
               onMouseEnter={(event) => {
                 if (!inputText.trim()) return;
-                event.currentTarget.style.background = '#1D4ED8';
+                event.currentTarget.style.background = THEME.accent.primaryHover;
                 event.currentTarget.style.transform = 'scale(1.05)';
               }}
               onMouseLeave={(event) => {
-                event.currentTarget.style.background = inputText.trim() ? ACCENT : 'rgba(0,0,0,0.32)';
+                event.currentTarget.style.background = inputText.trim() ? ACCENT : THEME.glass.button;
                 event.currentTarget.style.transform = 'scale(1)';
               }}
             >

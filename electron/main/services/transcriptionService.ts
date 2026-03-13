@@ -1,6 +1,7 @@
 // Audio transcription service - Gemini 2.5 Flash transcription and command recovery
 import { apiKeyManager } from '../managers/apiKeyManager.js';
 import { GEMINI_MODEL } from '../utils/constants.js';
+import { mainLogger } from '../utils/logger.js';
 
 const TRANSCRIPTION_PROMPT = [
   'Transcribe exactly the words actually spoken in this audio recording.',
@@ -216,21 +217,21 @@ class TranscriptionService {
         );
         const recoveredResult = this.buildTranscriptionResult(recoveredTranscript, 'recovery');
         if (this.shouldAcceptRecoveredTranscript(recoveredResult, firstPass)) {
-          console.log('[Transcription] Recovered likely command from focused retry:', recoveredResult.canonicalCommand, recoveredResult.intent);
+          mainLogger.info('[Transcription] Recovered likely command from focused retry:', recoveredResult.canonicalCommand, recoveredResult.intent);
           return recoveredResult;
         }
       } catch (error) {
-        console.warn('[Transcription] Focused command recovery failed:', error);
+        mainLogger.warn('[Transcription] Focused command recovery failed:', error);
       }
 
       try {
         const recovered = await this.classifyIntentWithGemini(audioBase64, mimeType, geminiKey, options);
         if (this.shouldAcceptRecoveredIntent(recovered, firstPass)) {
-          console.log('[Transcription] Recovered likely command:', recovered.canonicalCommand, recovered.intent);
+          mainLogger.info('[Transcription] Recovered likely command:', recovered.canonicalCommand, recovered.intent);
           return recovered;
         }
       } catch (error) {
-        console.warn('[Transcription] Command recovery failed:', error);
+        mainLogger.warn('[Transcription] Command recovery failed:', error);
       }
     }
 
@@ -261,7 +262,7 @@ class TranscriptionService {
       );
 
       if (words.length > maxReasonableWords) {
-        console.warn('[Transcription] Discarding implausible transcript for clip length:', { durationMs, words: words.length, text });
+        mainLogger.warn('[Transcription] Discarding implausible transcript for clip length:', { durationMs, words: words.length, text });
         return '';
       }
     }
@@ -593,7 +594,7 @@ class TranscriptionService {
       data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '',
       options,
     );
-    console.log('[Transcription] Gemini result:', text);
+    mainLogger.info('[Transcription] Gemini result:', text);
     return text;
   }
 

@@ -3,9 +3,9 @@ import { ipcMain } from 'electron';
 import { apiKeyManager } from '../managers/apiKeyManager.js';
 import { windowManager } from '../windowManager.js';
 import { cloudLog } from './cloudLogger.js';
+import { ELEVENLABS_MODEL_ID, ELEVENLABS_VOICE_ID } from '../utils/constants.js';
+import { mainLogger } from '../utils/logger.js';
 
-const VOICE_ID = 'EXAVITQu4vr4xnSDxMaL'; // Rachel - clear, calm
-const MODEL_ID = 'eleven_turbo_v2_5';
 const PLAYBACK_TIMEOUT_MS = 30_000;
 
 let nextId = 0;
@@ -28,7 +28,7 @@ class TtsService {
 
     ipcMain.on('sally:tts-playback-error', (_event, data: { id: string; message: string }) => {
       if (!data?.id) return;
-      console.error('[TTS] Renderer playback error for', data.id, '-', data.message);
+      mainLogger.error('[TTS] Renderer playback error for', data.id, '-', data.message);
     });
   }
 
@@ -75,7 +75,7 @@ class TtsService {
       try {
         await this.playText(text);
       } catch (error) {
-        console.error('[TTS] Error playing text:', error);
+        mainLogger.error('[TTS] Error playing text:', error);
       }
     }
 
@@ -86,7 +86,7 @@ class TtsService {
     const apiKey = apiKeyManager.getElevenLabsKey();
     const startedAt = Date.now();
     if (!apiKey) {
-      console.warn('[TTS] No ElevenLabs API key configured');
+      mainLogger.warn('[TTS] No ElevenLabs API key configured');
       cloudLog('WARNING', 'tts_request', {
         textLength: text.length,
         latencyMs: Date.now() - startedAt,
@@ -97,7 +97,7 @@ class TtsService {
     }
 
     try {
-      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`, {
+      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`, {
         method: 'POST',
         headers: {
           'xi-api-key': apiKey,
@@ -105,7 +105,7 @@ class TtsService {
         },
         body: JSON.stringify({
           text,
-          model_id: MODEL_ID,
+          model_id: ELEVENLABS_MODEL_ID,
           voice_settings: {
             stability: 0.5,
             similarity_boost: 0.75,
@@ -116,7 +116,7 @@ class TtsService {
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('[TTS] ElevenLabs API error:', response.status, errorText);
+        mainLogger.error('[TTS] ElevenLabs API error:', response.status, errorText);
         cloudLog('ERROR', 'tts_request', {
           textLength: text.length,
           latencyMs: Date.now() - startedAt,
@@ -136,7 +136,7 @@ class TtsService {
         this.pendingResolve = resolve;
         this.pendingId = id;
         void this.sendAudioToSallyBar({ audioBase64, id }).catch((error) => {
-          console.error('[TTS] Failed to deliver audio to Sally bar:', error);
+          mainLogger.error('[TTS] Failed to deliver audio to Sally bar:', error);
           if (this.pendingId === id && this.pendingResolve) {
             this.pendingResolve();
             this.pendingResolve = null;
@@ -147,7 +147,7 @@ class TtsService {
         // Safety timeout in case renderer never responds
         setTimeout(() => {
           if (this.pendingId === id && this.pendingResolve) {
-            console.warn('[TTS] Playback completion timeout for', id);
+            mainLogger.warn('[TTS] Playback completion timeout for', id);
             this.pendingResolve();
             this.pendingResolve = null;
             this.pendingId = null;
@@ -158,11 +158,11 @@ class TtsService {
         textLength: text.length,
         latencyMs: Date.now() - startedAt,
         success: true,
-        voiceId: VOICE_ID,
-        modelId: MODEL_ID,
+        voiceId: ELEVENLABS_VOICE_ID,
+        modelId: ELEVENLABS_MODEL_ID,
       });
     } catch (error) {
-      console.error('[TTS] Failed to synthesize speech:', error);
+      mainLogger.error('[TTS] Failed to synthesize speech:', error);
       cloudLog('ERROR', 'tts_request', {
         textLength: text.length,
         latencyMs: Date.now() - startedAt,

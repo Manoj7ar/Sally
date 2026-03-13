@@ -9,6 +9,7 @@ import { cloudLog } from './cloudLogger.js';
 import type { BrowserSnapshot, BrowserSourceMode, BrowserTabInfo, PageContext } from './pageContext.js';
 import { runDomTaskInPage } from './browserDomRuntime.js';
 import { destinationResolver } from './destinationResolver.js';
+import { mainLogger } from '../utils/logger.js';
 
 const BROWSER_PARTITION = 'persist:sally-browser';
 const MAX_INTERACTIVE_ELEMENTS = 40;
@@ -452,7 +453,7 @@ class BrowserService {
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error('[BrowserService] Action failed:', message);
+      mainLogger.error('[BrowserService] Action failed:', message);
       cloudLog('ERROR', 'browser_action_iteration', {
         actionType: action.type,
         selector: action.selector || null,
