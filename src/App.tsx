@@ -3,6 +3,7 @@ import type { ErrorInfo, ReactNode } from 'react';
 import ConfigWindow from './windows/config/ConfigWindow';
 import SallyBarWindow from './windows/sallyBar/SallyBarWindow';
 import BorderOverlay from './windows/borderOverlay/BorderOverlay';
+import BrowserWindow from './windows/browser/BrowserWindow';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
@@ -33,7 +34,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 const isElectron = !!window.electron;
 
 function App() {
-  const [windowType, setWindowType] = useState<'config' | 'sallyBar' | 'borderOverlay'>('config');
+  const [windowType, setWindowType] = useState<'config' | 'sallyBar' | 'borderOverlay' | 'browser'>('config');
 
   useEffect(() => {
     if (!isElectron) return;
@@ -45,6 +46,8 @@ function App() {
     } else if (type === 'borderOverlay') {
       setWindowType('borderOverlay');
       document.body.classList.add('transparent-window');
+    } else if (type === 'browser') {
+      setWindowType('browser');
     } else {
       setWindowType('config');
     }
@@ -64,6 +67,7 @@ function App() {
 
   if (windowType === 'borderOverlay') return <ErrorBoundary><BorderOverlay /></ErrorBoundary>;
   if (windowType === 'sallyBar') return <ErrorBoundary><SallyBarWindow /></ErrorBoundary>;
+  if (windowType === 'browser') return <ErrorBoundary><BrowserWindow /></ErrorBoundary>;
   return <ErrorBoundary><ConfigWindow /></ErrorBoundary>;
 }
 

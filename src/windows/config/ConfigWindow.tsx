@@ -325,11 +325,12 @@ export default function ConfigWindow() {
       </div>
 
       {/* Launch Assistant button */}
-      <div style={{ padding: '12px 24px 0', flexShrink: 0 }}>
+      <div style={{ padding: '12px 24px 0', flexShrink: 0, display: 'flex', gap: 10 }}>
         <button
           onClick={() => ipc.invoke('window:show-pill')}
+          data-testid="launch-assistant-button"
           style={{
-            width: '100%', padding: '10px 0', borderRadius: 10,
+            flex: 1, padding: '10px 0', borderRadius: 10,
             border: '1px solid rgba(37,99,235,0.3)',
             background: 'rgba(37,99,235,0.08)',
             color: '#2563EB', fontSize: 13, fontWeight: 600,
@@ -353,6 +354,34 @@ export default function ConfigWindow() {
             <line x1="17" y1="12" x2="22" y2="12" stroke="#2563EB" strokeWidth="2" strokeLinecap="round" />
           </svg>
           Launch Assistant
+        </button>
+        <button
+          onClick={() => ipc.invoke('window:show-browser')}
+          data-testid="open-browser-button"
+          style={{
+            flex: 1, padding: '10px 0', borderRadius: 10,
+            border: '1px solid rgba(14,165,233,0.26)',
+            background: 'rgba(14,165,233,0.08)',
+            color: '#0284C7', fontSize: 13, fontWeight: 600,
+            cursor: 'pointer', transition: 'all 0.15s, transform 0.15s',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'rgba(14,165,233,0.14)';
+            e.currentTarget.style.transform = 'scale(1.02)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'rgba(14,165,233,0.08)';
+            e.currentTarget.style.transform = 'scale(1)';
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="4" width="18" height="16" rx="3" stroke="#0284C7" strokeWidth="2" />
+            <path d="M3 8H21" stroke="#0284C7" strokeWidth="2" />
+            <circle cx="6.5" cy="6" r="1" fill="#0284C7" />
+            <circle cx="9.5" cy="6" r="1" fill="#0284C7" />
+          </svg>
+          Open Browser
         </button>
       </div>
 

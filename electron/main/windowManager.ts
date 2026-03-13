@@ -2,7 +2,7 @@
 import { BrowserWindow, screen, app } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { CONFIG_WINDOW, SALLY_BAR } from './utils/constants.js';
+import { BROWSER_WINDOW, CONFIG_WINDOW, SALLY_BAR } from './utils/constants.js';
 import { store, STORE_KEYS } from './utils/store.js';
 import type { OverlayHighlightPayload, SallyBarLayout } from '../../shared/types.js';
 
@@ -17,6 +17,7 @@ export function isQuitting(): boolean { return _isQuitting; }
 class WindowManager {
   private configWindow: BrowserWindow | null = null;
   private sallyBarWindow: BrowserWindow | null = null;
+  private browserWindow: BrowserWindow | null = null;
   private borderOverlayWindow: BrowserWindow | null = null;
   private borderOverlayTargetDisplayId: number | null = null;
   private overlayHighlightState: OverlayHighlightPayload | null = null;
@@ -59,7 +60,7 @@ class WindowManager {
     return path.join(currentDir, '../preload/index.js');
   }
 
-  private getRendererUrl(windowType: 'config' | 'sallyBar' | 'borderOverlay'): string {
+  private getRendererUrl(windowType: 'config' | 'sallyBar' | 'borderOverlay' | 'browser'): string {
     if (process.env.VITE_DEV_SERVER_URL) {
       const separator = process.env.VITE_DEV_SERVER_URL.includes('?') ? '&' : '?';
       return `${process.env.VITE_DEV_SERVER_URL}${separator}window=${windowType}`;
@@ -194,6 +195,44 @@ class WindowManager {
     if (this.sallyBarWindow && !this.sallyBarWindow.isDestroyed()) {
       this.sallyBarWindow.hide();
     }
+  }
+
+  showBrowserWindow(): BrowserWindow {
+    if (this.browserWindow && !this.browserWindow.isDestroyed()) {
+      this.browserWindow.show();
+      this.browserWindow.focus();
+      return this.browserWindow;
+    }
+
+    this.browserWindow = new BrowserWindow({
+      width: BROWSER_WINDOW.width,
+      height: BROWSER_WINDOW.height,
+      minWidth: BROWSER_WINDOW.minWidth,
+      minHeight: BROWSER_WINDOW.minHeight,
+      title: 'Sally Browser',
+      autoHideMenuBar: true,
+      show: false,
+      backgroundColor: '#0b1220',
+      webPreferences: {
+        preload: this.getPreloadPath(),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+      },
+    });
+
+    this.browserWindow.loadURL(this.getRendererUrl('browser'));
+    this.attachWindowDiagnostics(this.browserWindow, 'browser');
+
+    this.browserWindow.once('ready-to-show', () => {
+      this.browserWindow?.show();
+    });
+
+    this.browserWindow.on('closed', () => {
+      this.browserWindow = null;
+    });
+
+    return this.browserWindow;
   }
 
   // ── Gold border overlay ──
@@ -410,8 +449,12 @@ class WindowManager {
     return this.configWindow;
   }
 
+  getBrowserWindow(): BrowserWindow | null {
+    return this.browserWindow;
+  }
+
   broadcastToAll(channel: string, data: unknown): void {
-    const windows = [this.configWindow, this.sallyBarWindow, this.borderOverlayWindow];
+    const windows = [this.configWindow, this.sallyBarWindow, this.browserWindow, this.borderOverlayWindow];
     windows.forEach((win) => {
       if (win && !win.isDestroyed()) {
         win.webContents.send(channel, data);
@@ -422,9 +465,11 @@ class WindowManager {
   destroyAll(): void {
     this.configWindow?.destroy();
     this.sallyBarWindow?.destroy();
+    this.browserWindow?.destroy();
     this.borderOverlayWindow?.destroy();
     this.configWindow = null;
     this.sallyBarWindow = null;
+    this.browserWindow = null;
     this.borderOverlayWindow = null;
     this.overlayHighlightState = null;
     this.waitingOverlayState = null;

@@ -3,6 +3,7 @@ import { ipcMain, shell } from 'electron';
 import { apiKeyManager } from './managers/apiKeyManager.js';
 import { microphoneManager } from './managers/microphoneManager.js';
 import { sessionManager } from './managers/sessionManager.js';
+import { browserService } from './services/browserService.js';
 import { windowManager } from './windowManager.js';
 import { store, STORE_KEYS } from './utils/store.js';
 
@@ -119,10 +120,89 @@ export function registerIpcHandlers(): void {
     shell.openExternal(url);
   });
 
+  ipcMain.handle('browser:get-state', async () => {
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:new-tab', async (_e, data?: { url?: string }) => {
+    await browserService.openTab(data?.url, { activate: true });
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:switch-tab', async (_e, data: { tabId: string }) => {
+    await browserService.switchToTab(data.tabId);
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:close-tab', async (_e, data: { tabId: string }) => {
+    await browserService.closeTab(data.tabId);
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:navigate', async (_e, data: { url: string }) => {
+    await browserService.navigateActiveTab(data.url);
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:go-back', async () => {
+    await browserService.goBack();
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:go-forward', async () => {
+    await browserService.goForward();
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:reload', async () => {
+    await browserService.reloadActiveTab();
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:get-snapshot', async () => {
+    const snapshot = await browserService.captureBrowserSnapshot().catch(() => null);
+    if (!snapshot) {
+      return null;
+    }
+
+    return {
+      pageUrl: snapshot.pageUrl,
+      pageTitle: snapshot.pageTitle,
+      headings: snapshot.pageContext.headings,
+      visibleMessages: snapshot.pageContext.visibleMessages,
+      interactiveCount: snapshot.pageContext.interactiveElements.length,
+      activeTabId: snapshot.activeTabId,
+      tabCount: snapshot.tabs.length,
+    };
+  });
+
+  ipcMain.handle('browser:execute-action', async (_e, action: {
+    type: string;
+    selector?: string;
+    value?: string;
+    url?: string;
+    index?: number;
+    tabId?: string;
+    targetId?: string;
+    framePath?: number[];
+    shadowPath?: number[];
+  }) => {
+    return browserService.executeAction(action);
+  });
+
+  ipcMain.handle('browser:inspect-gmail-draft', async () => {
+    return browserService.inspectGmailDraft();
+  });
+
+
   // ── Window ──
 
   ipcMain.handle('window:show-config', () => {
     windowManager.showConfigWindow();
+  });
+
+  ipcMain.handle('window:show-browser', () => {
+    return browserService.launch().then(() => undefined);
   });
 
   ipcMain.handle('window:set-pill-layout', (_event, data: { layout: 'idle' | 'compact' | 'composer' | 'transcript' }) => {

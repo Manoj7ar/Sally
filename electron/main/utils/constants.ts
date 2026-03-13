@@ -9,6 +9,14 @@ export const CONFIG_WINDOW = {
   minHeight: 400,
 };
 
+export const BROWSER_WINDOW = {
+  width: 1360,
+  height: 920,
+  minWidth: 1080,
+  minHeight: 760,
+  chromeHeight: 108,
+};
+
 export const SALLY_BAR = {
   idleWidth: 420,
   idleHeight: 48,

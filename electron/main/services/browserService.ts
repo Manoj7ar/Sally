@@ -1,6 +1,9 @@
 /// <reference lib="dom" />
 
-import { BrowserWindow, screen } from 'electron';
+import { BrowserWindow, screen, type WebContents, WebContentsView } from 'electron';
+import type { BrowserUiState, BrowserTabState as BrowserShellTabState } from '../../../shared/types.js';
+import { windowManager } from '../windowManager.js';
+import { BROWSER_WINDOW } from '../utils/constants.js';
 import type { GeminiAction } from './geminiService.js';
 import { cloudLog } from './cloudLogger.js';
 import type { BrowserSnapshot, BrowserSourceMode, BrowserTabInfo, PageContext } from './pageContext.js';
@@ -13,11 +16,13 @@ const MAX_VISIBLE_MESSAGES = 8;
 const MAX_HEADINGS = 8;
 const MIN_SETTLE_DELAY_MS = 600;
 const MAX_SETTLE_DELAY_MS = 3_000;
+const DEFAULT_START_URL = 'https://www.google.com';
 
-interface BrowserTabState {
+interface BrowserTabRuntime {
   id: string;
-  window: BrowserWindow;
+  view: WebContentsView;
   createdAt: number;
+  cleanup: () => void;
 }
 
 export interface GmailDraftInspection {
@@ -31,11 +36,21 @@ export interface GmailDraftInspection {
 }
 
 class BrowserService {
-  private tabs: BrowserTabState[] = [];
+  private tabs: BrowserTabRuntime[] = [];
   private activeTabId: string | null = null;
   private launchNotice: string | null = null;
   private controlMode: BrowserSourceMode = 'electron_browser';
   private nextTabOrdinal = 1;
+  private shellWindow: BrowserWindow | null = null;
+
+  private readonly handleShellResize = (): void => {
+    this.layoutActiveTabView();
+  };
+
+  private readonly handleShellClosed = (): void => {
+    this.shellWindow = null;
+    this.destroyAllTabs();
+  };
 
   getSourceMode(): BrowserSourceMode {
     return this.controlMode;
@@ -48,16 +63,18 @@ class BrowserService {
   }
 
   async launch(startUrl?: string): Promise<BrowserWindow> {
+    const shell = this.ensureShellWindow();
     let tab = this.getActiveTab();
     const reusedExistingTab = Boolean(tab);
+
     if (!tab) {
       this.launchNotice = 'Opening Sally browser for this task.';
-      tab = await this.createTab(startUrl || 'https://www.google.com', true);
+      tab = await this.createTab(startUrl || DEFAULT_START_URL, true);
     } else {
       if (startUrl) {
-        await this.ensurePageUrl(tab.window, this.coerceUrl(startUrl));
-      } else if (!this.hasRealContent(tab.window.webContents.getURL())) {
-        await this.ensurePageUrl(tab.window, 'https://www.google.com');
+        await this.navigateTab(tab, startUrl);
+      } else if (!this.hasRealContent(tab.view.webContents.getURL())) {
+        await this.navigateTab(tab, DEFAULT_START_URL);
       }
       await this.showTab(tab.id);
     }
@@ -67,12 +84,13 @@ class BrowserService {
         startUrl: startUrl || null,
         reusedExistingTab,
         activeTabId: tab.id,
-        pageUrl: tab.window.webContents.getURL() || null,
-        pageTitle: tab.window.webContents.getTitle() || null,
+        pageUrl: tab.view.webContents.getURL() || null,
+        pageTitle: tab.view.webContents.getTitle() || null,
       });
     }
 
-    return tab.window;
+    this.pushUiState();
+    return shell;
   }
 
   isRunning(): boolean {
@@ -81,22 +99,30 @@ class BrowserService {
   }
 
   async close(): Promise<void> {
-    const tabs = [...this.tabs];
-    this.tabs = [];
+    this.destroyAllTabs();
     this.activeTabId = null;
+    this.pushUiState();
+  }
 
-    for (const tab of tabs) {
-      if (!tab.window.isDestroyed()) {
-        tab.window.destroy();
-      }
-    }
+  getUiState(): BrowserUiState {
+    this.cleanupDeadTabs();
+    const activeTab = this.getActiveTab();
+    return {
+      tabs: this.tabs.map((tab) => this.toShellTabState(tab)),
+      activeTabId: this.activeTabId,
+      activeTitle: activeTab?.view.webContents.getTitle() || '',
+      activeUrl: activeTab?.view.webContents.getURL() || '',
+      isLoading: activeTab?.view.webContents.isLoading() || false,
+      canGoBack: activeTab?.view.webContents.canGoBack() || false,
+      canGoForward: activeTab?.view.webContents.canGoForward() || false,
+    };
   }
 
   async getPageInfo(): Promise<{ url: string; title: string }> {
-    const window = await this.launch();
+    const tab = this.getActiveTab() || await this.createTab(DEFAULT_START_URL, true);
     return {
-      url: window.webContents.getURL(),
-      title: window.webContents.getTitle(),
+      url: tab.view.webContents.getURL(),
+      title: tab.view.webContents.getTitle(),
     };
   }
 
@@ -105,42 +131,131 @@ class BrowserService {
     return this.tabs.map((tab) => this.toTabInfo(tab));
   }
 
-  async getBrowserWindowBounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
-    const tab = this.getActiveTab();
-    if (!tab || tab.window.isDestroyed()) {
+  async openTab(url?: string, options: { activate?: boolean } = {}): Promise<BrowserTabInfo> {
+    const tab = await this.createTab(url || DEFAULT_START_URL, options.activate !== false);
+    this.pushUiState();
+    return this.toTabInfo(tab);
+  }
+
+  async switchToTab(tabId: string): Promise<BrowserTabInfo | null> {
+    const tab = this.tabs.find((entry) => entry.id === tabId) || null;
+    if (!tab) {
       return null;
     }
 
-    return tab.window.getBounds();
+    await this.showTab(tabId);
+    return this.toTabInfo(tab);
+  }
+
+  async closeTab(tabId: string): Promise<void> {
+    const tab = this.tabs.find((entry) => entry.id === tabId);
+    if (!tab) {
+      return;
+    }
+
+    const wasActive = this.activeTabId === tabId;
+    this.detachTabView(tab);
+    this.tabs = this.tabs.filter((entry) => entry.id !== tabId);
+    tab.cleanup();
+    if (!tab.view.webContents.isDestroyed()) {
+      tab.view.webContents.close();
+    }
+
+    if (this.tabs.length === 0) {
+      await this.createTab(DEFAULT_START_URL, true);
+      return;
+    }
+
+    if (wasActive) {
+      const fallback = this.tabs[this.tabs.length - 1];
+      await this.showTab(fallback.id);
+      return;
+    }
+
+    this.pushUiState();
+  }
+
+  async navigateActiveTab(url: string): Promise<void> {
+    const tab = this.getActiveTab() || await this.createTab(DEFAULT_START_URL, true);
+    await this.navigateTab(tab, url);
+    this.pushUiState();
+  }
+
+  async goBack(): Promise<void> {
+    const tab = this.getActiveTab();
+    if (!tab || !tab.view.webContents.canGoBack()) {
+      return;
+    }
+
+    tab.view.webContents.goBack();
+    await this.waitForSettle('back');
+    this.pushUiState();
+  }
+
+  async goForward(): Promise<void> {
+    const tab = this.getActiveTab();
+    if (!tab || !tab.view.webContents.canGoForward()) {
+      return;
+    }
+
+    tab.view.webContents.goForward();
+    await this.waitForSettle('navigate');
+    this.pushUiState();
+  }
+
+  async reloadActiveTab(): Promise<void> {
+    const tab = this.getActiveTab();
+    if (!tab) {
+      return;
+    }
+
+    tab.view.webContents.reload();
+    await this.waitForSettle('navigate');
+    this.pushUiState();
+  }
+
+  async getBrowserWindowBounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+    const shell = this.shellWindow;
+    if (!shell || shell.isDestroyed()) {
+      return null;
+    }
+
+    return shell.getBounds();
   }
 
   async getBrowserContentBounds(): Promise<{ x: number; y: number; width: number; height: number } | null> {
-    const tab = this.getActiveTab();
-    if (!tab || tab.window.isDestroyed()) {
+    const shell = this.shellWindow;
+    if (!shell || shell.isDestroyed()) {
       return null;
     }
 
-    return tab.window.getContentBounds();
+    const contentBounds = shell.getContentBounds();
+    return {
+      x: contentBounds.x,
+      y: contentBounds.y + BROWSER_WINDOW.chromeHeight,
+      width: contentBounds.width,
+      height: Math.max(0, contentBounds.height - BROWSER_WINDOW.chromeHeight),
+    };
   }
 
   async takeScreenshot(): Promise<string> {
-    const window = await this.launch();
-    const image = await window.webContents.capturePage();
+    const tab = this.getActiveTab() || await this.createTab(DEFAULT_START_URL, true);
+    const image = await tab.view.webContents.capturePage();
     return image.toPNG().toString('base64');
   }
 
   async captureBrowserSnapshot(): Promise<BrowserSnapshot> {
-    const tab = this.getActiveTab() || { id: '', window: await this.launch(), createdAt: Date.now() };
+    const tab = this.getActiveTab() || await this.createTab(DEFAULT_START_URL, true);
     const [screenshot, pageContext] = await Promise.all([
       this.takeScreenshot(),
-      this.extractPageContext(tab.window),
+      this.extractPageContext(tab.view.webContents),
     ]);
 
     return {
       sourceMode: this.controlMode,
       screenshot,
-      pageUrl: tab.window.webContents.getURL(),
-      pageTitle: tab.window.webContents.getTitle(),
+      pageUrl: tab.view.webContents.getURL(),
+      pageTitle: tab.view.webContents.getTitle(),
       pageContext,
       tabs: this.listTabs(),
       activeTabId: this.activeTabId,
@@ -149,16 +264,16 @@ class BrowserService {
 
   async inspectGmailDraft(): Promise<GmailDraftInspection | null> {
     const tab = this.getActiveTab();
-    if (!tab || tab.window.isDestroyed()) {
+    if (!tab || tab.view.webContents.isDestroyed()) {
       return null;
     }
 
-    const currentUrl = tab.window.webContents.getURL();
+    const currentUrl = tab.view.webContents.getURL();
     if (!currentUrl.includes('mail.google.com')) {
       return null;
     }
 
-    return tab.window.webContents.executeJavaScript(`(() => {
+    return tab.view.webContents.executeJavaScript(`(() => {
       const url = new URL(location.href);
       const composeDialog = document.querySelector('div[role="dialog"]');
       const bodyRoot = document.querySelector('div[aria-label="Message Body"]')
@@ -190,124 +305,9 @@ class BrowserService {
     })()`, true) as Promise<GmailDraftInspection>;
   }
 
-  private isGmailComposeAction(action: GeminiAction, currentUrl: string): boolean {
-    if (action.type !== 'click' || !currentUrl.includes('mail.google.com')) {
-      return false;
-    }
-
-    const texts = [action.selector, action.value]
-      .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
-      .join(' ');
-    return /\b(compose|new email|new message)\b/i.test(texts);
-  }
-
-  private async inspectGmailDraftWithRetry(attempts = 4, intervalMs = 250): Promise<GmailDraftInspection | null> {
-    let lastDraft: GmailDraftInspection | null = null;
-
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      lastDraft = await this.inspectGmailDraft();
-      if (lastDraft?.composeOpen) {
-        return lastDraft;
-      }
-
-      if (attempt < attempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      }
-    }
-
-    return lastDraft;
-  }
-
-  private async tryGmailComposeButtonFallback(window: BrowserWindow): Promise<boolean> {
-    return window.webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim().toLowerCase();
-      const isVisible = (element) => {
-        if (!(element instanceof HTMLElement)) return false;
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        if (style.display === 'none' || style.visibility === 'hidden') return false;
-        if (Number(style.opacity || '1') <= 0.05) return false;
-        return rect.width >= 4 && rect.height >= 4 && rect.bottom >= 0 && rect.right >= 0;
-      };
-
-      const candidates = Array.from(document.querySelectorAll('div[role="button"], button, [gh="cm"], [aria-label], [data-tooltip]'))
-        .filter((element) => element instanceof HTMLElement)
-        .filter((element) => isVisible(element))
-        .map((element) => {
-          const label = normalize(
-            element.getAttribute('aria-label')
-            || element.getAttribute('data-tooltip')
-            || element.getAttribute('title')
-            || element.textContent
-          );
-          const gh = normalize(element.getAttribute('gh'));
-          const score = (
-            (gh === 'cm' ? 220 : 0)
-            + (label === 'compose' ? 180 : 0)
-            + (label.startsWith('compose') ? 120 : 0)
-            + (label.includes('new message') ? 110 : 0)
-            + (element.getAttribute('role') === 'button' ? 30 : 0)
-            + (element.tagName.toLowerCase() === 'button' ? 20 : 0)
-          );
-          return { element, score };
-        })
-        .filter((entry) => entry.score > 0)
-        .sort((left, right) => right.score - left.score);
-
-      const target = candidates[0]?.element;
-      if (!(target instanceof HTMLElement)) {
-        return false;
-      }
-
-      target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-      target.focus();
-      const rect = target.getBoundingClientRect();
-      const eventInit = {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        view: window,
-        clientX: rect.left + rect.width / 2,
-        clientY: rect.top + rect.height / 2,
-        button: 0,
-      };
-
-      target.dispatchEvent(new PointerEvent('pointerdown', eventInit));
-      target.dispatchEvent(new MouseEvent('mousedown', eventInit));
-      target.dispatchEvent(new PointerEvent('pointerup', eventInit));
-      target.dispatchEvent(new MouseEvent('mouseup', eventInit));
-      target.click();
-      return true;
-    })()`, true) as Promise<boolean>;
-  }
-
-  private async verifyOrRecoverDomClick(window: BrowserWindow, action: GeminiAction, domResult: { ok: boolean; message: string }): Promise<{ ok: boolean; message: string }> {
-    const currentUrl = window.webContents.getURL();
-    if (!this.isGmailComposeAction(action, currentUrl)) {
-      return domResult;
-    }
-
-    const initialDraftState = await this.inspectGmailDraftWithRetry();
-    if (initialDraftState?.composeOpen) {
-      return domResult.ok
-        ? domResult
-        : { ok: true, message: 'Opened Gmail compose' };
-    }
-
-    const fallbackTriggered = await this.tryGmailComposeButtonFallback(window);
-    if (fallbackTriggered) {
-      const recoveredDraftState = await this.inspectGmailDraftWithRetry();
-      if (recoveredDraftState?.composeOpen) {
-        return { ok: true, message: 'Opened Gmail compose' };
-      }
-    }
-
-    return { ok: false, message: 'gmail_compose_not_opened' };
-  }
-
   async executeAction(action: GeminiAction): Promise<string> {
-    const window = await this.launch();
-    const contents = window.webContents;
+    const tab = this.getActiveTab() || await this.createTab(DEFAULT_START_URL, true);
+    const contents = tab.view.webContents;
     const startedAt = Date.now();
 
     try {
@@ -321,8 +321,8 @@ class BrowserService {
           }
           const url = await this.resolveNavigationTarget(action.url);
           const beforeUrl = contents.getURL();
-          await this.ensurePageUrl(window, url);
-          const afterUrl = await this.waitForNavigationResult(window, beforeUrl, url);
+          await this.ensurePageUrl(contents, url);
+          const afterUrl = await this.waitForNavigationResult(contents, beforeUrl, url);
           result = afterUrl && (afterUrl !== beforeUrl || this.isEquivalentNavigationUrl(afterUrl, url))
             ? `Navigated to ${afterUrl}`
             : `Action failed: did not navigate to ${url}`;
@@ -332,9 +332,9 @@ class BrowserService {
         case 'open_tab': {
           const rawUrl = action.url || action.selector || action.value || '';
           const targetUrl = rawUrl ? await this.resolveNavigationTarget(rawUrl) : undefined;
-          const tab = await this.openTab(targetUrl, { activate: true });
+          const created = await this.openTab(targetUrl, { activate: true });
           await this.waitForSettle('open_tab');
-          result = `Opened new tab "${tab.title || tab.url}"`;
+          result = `Opened new tab "${created.title || created.url}"`;
           break;
         }
 
@@ -407,20 +407,21 @@ class BrowserService {
         case 'check':
         case 'uncheck': {
           const domResult = await this.runDomAction(action);
-          const result = action.type === 'click'
-            ? await this.verifyOrRecoverDomClick(window, action, domResult)
+          const verified = action.type === 'click'
+            ? await this.verifyOrRecoverDomClick(action, domResult)
             : domResult;
-          const message = result.ok ? result.message : this.mapDomFailure(action, result.message);
-          cloudLog(result.ok ? 'INFO' : 'WARNING', 'browser_action_iteration', {
+          const message = verified.ok ? verified.message : this.mapDomFailure(action, verified.message);
+          cloudLog(verified.ok ? 'INFO' : 'WARNING', 'browser_action_iteration', {
             actionType: action.type,
             selector: action.selector || null,
             targetId: action.targetId || null,
             framePath: action.framePath || null,
             shadowPath: action.shadowPath || null,
             latencyMs: Date.now() - startedAt,
-            success: result.ok,
+            success: verified.ok,
             result: message,
           });
+          this.pushUiState();
           return message;
         }
 
@@ -447,6 +448,7 @@ class BrowserService {
         },
       );
 
+      this.pushUiState();
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -461,17 +463,18 @@ class BrowserService {
         success: false,
         error: message,
       });
+      this.pushUiState();
       return `Action failed: ${message}`;
     }
   }
 
   async waitForSettle(actionType: string): Promise<void> {
     const tab = this.getActiveTab();
-    if (!tab || tab.window.isDestroyed()) {
+    if (!tab || tab.view.webContents.isDestroyed()) {
       return;
     }
 
-    const contents = tab.window.webContents;
+    const contents = tab.view.webContents;
     const needsLongerWait = ['navigate', 'click', 'back', 'select', 'open_tab', 'switch_tab'].includes(actionType);
     const timeoutMs = needsLongerWait ? MAX_SETTLE_DELAY_MS : MIN_SETTLE_DELAY_MS;
 
@@ -495,11 +498,267 @@ class BrowserService {
     ]);
 
     await new Promise((resolve) => setTimeout(resolve, MIN_SETTLE_DELAY_MS));
+    this.pushUiState();
   }
 
-  async openTab(url?: string, options: { activate?: boolean } = {}): Promise<BrowserTabInfo> {
-    const tab = await this.createTab(url || 'https://www.google.com', options.activate !== false);
-    return this.toTabInfo(tab);
+  private ensureShellWindow(): BrowserWindow {
+    const shell = windowManager.showBrowserWindow();
+    if (this.shellWindow?.id === shell.id) {
+      return shell;
+    }
+
+    if (this.shellWindow && !this.shellWindow.isDestroyed()) {
+      this.shellWindow.off('resize', this.handleShellResize);
+      this.shellWindow.off('closed', this.handleShellClosed);
+    }
+
+    this.shellWindow = shell;
+    shell.on('resize', this.handleShellResize);
+    shell.on('closed', this.handleShellClosed);
+    shell.webContents.on('did-finish-load', () => {
+      this.layoutActiveTabView();
+      this.pushUiState();
+    });
+    this.layoutActiveTabView();
+    this.pushUiState();
+    return shell;
+  }
+
+  private toShellTabState(tab: BrowserTabRuntime): BrowserShellTabState {
+    const contents = tab.view.webContents;
+    return {
+      id: tab.id,
+      title: contents.getTitle(),
+      url: contents.getURL(),
+      isActive: tab.id === this.activeTabId,
+      isLoading: contents.isLoading(),
+      canGoBack: contents.canGoBack(),
+      canGoForward: contents.canGoForward(),
+    };
+  }
+
+  private pushUiState(): void {
+    const state = this.getUiState();
+    const shell = this.shellWindow;
+    let activeTitle = state.activeTitle;
+
+    if (!activeTitle && state.activeUrl) {
+      try {
+        activeTitle = new URL(state.activeUrl).hostname;
+      } catch {
+        activeTitle = state.activeUrl;
+      }
+    }
+
+    if (shell && !shell.isDestroyed()) {
+      shell.setTitle(activeTitle ? `${activeTitle} - Sally Browser` : 'Sally Browser');
+    }
+    windowManager.broadcastToAll('browser:state-changed', state);
+  }
+
+  private getActiveTab(): BrowserTabRuntime | null {
+    this.cleanupDeadTabs();
+    if (this.activeTabId) {
+      const active = this.tabs.find((tab) => tab.id === this.activeTabId);
+      if (active) {
+        return active;
+      }
+    }
+
+    const fallback = this.tabs[0] || null;
+    this.activeTabId = fallback?.id || null;
+    return fallback;
+  }
+
+  private cleanupDeadTabs(): void {
+    this.tabs = this.tabs.filter((tab) => !tab.view.webContents.isDestroyed());
+    if (this.activeTabId && !this.tabs.some((tab) => tab.id === this.activeTabId)) {
+      this.activeTabId = this.tabs[0]?.id || null;
+    }
+  }
+
+  private layoutActiveTabView(): void {
+    const shell = this.shellWindow;
+    const active = this.getActiveTab();
+    if (!shell || shell.isDestroyed() || !active) {
+      return;
+    }
+
+    active.view.setBounds(this.getActiveViewBounds(shell));
+    active.view.setVisible(true);
+  }
+
+  private getActiveViewBounds(shell: BrowserWindow): { x: number; y: number; width: number; height: number } {
+    const contentBounds = shell.getContentBounds();
+    return {
+      x: 0,
+      y: BROWSER_WINDOW.chromeHeight,
+      width: contentBounds.width,
+      height: Math.max(0, contentBounds.height - BROWSER_WINDOW.chromeHeight),
+    };
+  }
+
+  private attachTabView(tab: BrowserTabRuntime): void {
+    const shell = this.ensureShellWindow();
+    for (const entry of this.tabs) {
+      if (entry.id === tab.id) {
+        continue;
+      }
+      this.detachTabView(entry);
+      entry.view.setVisible(false);
+    }
+
+    tab.view.setBounds(this.getActiveViewBounds(shell));
+    tab.view.setVisible(true);
+    shell.contentView.addChildView(tab.view);
+    shell.show();
+    shell.focus();
+    tab.view.webContents.focus();
+  }
+
+  private detachTabView(tab: BrowserTabRuntime): void {
+    const shell = this.shellWindow;
+    if (!shell || shell.isDestroyed()) {
+      return;
+    }
+
+    tab.view.setVisible(false);
+    shell.contentView.removeChildView(tab.view);
+  }
+
+  private async showTab(tabId: string): Promise<void> {
+    this.cleanupDeadTabs();
+    const next = this.tabs.find((tab) => tab.id === tabId);
+    if (!next) {
+      return;
+    }
+
+    this.activeTabId = next.id;
+    this.attachTabView(next);
+    this.pushUiState();
+  }
+
+  private destroyAllTabs(): void {
+    const tabs = [...this.tabs];
+    this.tabs = [];
+    this.activeTabId = null;
+    for (const tab of tabs) {
+      this.detachTabView(tab);
+      tab.cleanup();
+      if (!tab.view.webContents.isDestroyed()) {
+        tab.view.webContents.close();
+      }
+    }
+  }
+
+  private attachTabListeners(tab: BrowserTabRuntime): void {
+    const contents = tab.view.webContents;
+    const sync = (): void => {
+      if (this.activeTabId === tab.id) {
+        this.layoutActiveTabView();
+      }
+      this.pushUiState();
+    };
+
+    contents.setWindowOpenHandler(({ url }) => {
+      void this.openTab(url, { activate: true });
+      return { action: 'deny' };
+    });
+
+    const listeners: Array<[string, (...args: unknown[]) => void]> = [
+      ['did-start-loading', sync],
+      ['did-stop-loading', sync],
+      ['did-fail-load', sync],
+      ['page-title-updated', sync],
+      ['did-navigate', sync],
+      ['did-navigate-in-page', sync],
+      ['dom-ready', sync],
+      ['destroyed', () => this.handleDestroyedTab(tab.id)],
+    ];
+
+    for (const [eventName, handler] of listeners) {
+      contents.on(eventName as Parameters<WebContents['on']>[0], handler as Parameters<WebContents['on']>[1]);
+    }
+
+    tab.cleanup = () => {
+      for (const [eventName, handler] of listeners) {
+        contents.removeListener(eventName as Parameters<WebContents['on']>[0], handler as Parameters<WebContents['on']>[1]);
+      }
+    };
+  }
+
+  private handleDestroyedTab(tabId: string): void {
+    this.tabs = this.tabs.filter((tab) => tab.id !== tabId);
+    if (this.activeTabId === tabId) {
+      this.activeTabId = this.tabs[0]?.id || null;
+      const next = this.getActiveTab();
+      if (next) {
+        this.attachTabView(next);
+      }
+    }
+    this.pushUiState();
+  }
+
+  private async createTab(initialUrl: string, activate: boolean): Promise<BrowserTabRuntime> {
+    this.ensureShellWindow();
+    const targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || screen.getPrimaryDisplay();
+    const view = new WebContentsView({
+      webPreferences: {
+        partition: BROWSER_PARTITION,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    });
+    view.setBackgroundColor('#ffffff');
+
+    const tab: BrowserTabRuntime = {
+      id: `tab-${this.nextTabOrdinal++}`,
+      view,
+      createdAt: Date.now(),
+      cleanup: () => undefined,
+    };
+
+    this.attachTabListeners(tab);
+    this.tabs.push(tab);
+
+    const x = targetDisplay.workArea.x + Math.round((targetDisplay.workArea.width - BROWSER_WINDOW.width) / 2);
+    const y = targetDisplay.workArea.y + Math.round((targetDisplay.workArea.height - BROWSER_WINDOW.height) / 2);
+    const shell = this.ensureShellWindow();
+    if (!shell.isVisible()) {
+      shell.setBounds({
+        x,
+        y,
+        width: Math.min(BROWSER_WINDOW.width, targetDisplay.workArea.width),
+        height: Math.min(BROWSER_WINDOW.height, targetDisplay.workArea.height),
+      });
+    }
+
+    await this.ensurePageUrl(tab.view.webContents, this.coerceUrl(initialUrl));
+
+    if (activate || !this.activeTabId) {
+      await this.showTab(tab.id);
+    } else {
+      this.pushUiState();
+    }
+
+    return tab;
+  }
+
+  private async navigateTab(tab: BrowserTabRuntime, target: string): Promise<void> {
+    await this.ensurePageUrl(tab.view.webContents, await this.resolveNavigationTarget(target));
+    if (this.activeTabId === tab.id) {
+      this.pushUiState();
+    }
+  }
+
+  private toTabInfo(tab: BrowserTabRuntime): BrowserTabInfo {
+    return {
+      id: tab.id,
+      title: tab.view.webContents.getTitle(),
+      url: tab.view.webContents.getURL(),
+      isActive: tab.id === this.activeTabId,
+    };
   }
 
   private async switchTab(action: GeminiAction): Promise<BrowserTabInfo | null> {
@@ -512,8 +771,8 @@ class BrowserService {
     return this.toTabInfo(tab);
   }
 
-  private resolveTab(action: GeminiAction): BrowserTabState | null {
-    const tabs = this.getLiveTabs();
+  private resolveTab(action: GeminiAction): BrowserTabRuntime | null {
+    const tabs = [...this.tabs];
     if (tabs.length === 0) {
       return null;
     }
@@ -538,9 +797,9 @@ class BrowserService {
       return this.getActiveTab();
     }
 
-    const scoreTab = (tab: BrowserTabState): number => {
-      const title = tab.window.webContents.getTitle().toLowerCase();
-      const url = tab.window.webContents.getURL().toLowerCase();
+    const scoreTab = (tab: BrowserTabRuntime): number => {
+      const title = tab.view.webContents.getTitle().toLowerCase();
+      const url = tab.view.webContents.getURL().toLowerCase();
       let score = 0;
 
       if (title === query || url === query) score = Math.max(score, 120);
@@ -566,140 +825,6 @@ class BrowserService {
       .sort((left, right) => right.score - left.score || left.tab.createdAt - right.tab.createdAt)[0]?.tab || null;
   }
 
-  private async createTab(initialUrl: string, activate: boolean): Promise<BrowserTabState> {
-    const targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || screen.getPrimaryDisplay();
-    const width = Math.min(1320, Math.max(960, targetDisplay.workArea.width - 80));
-    const height = Math.min(940, Math.max(720, targetDisplay.workArea.height - 80));
-    const x = targetDisplay.workArea.x + Math.round((targetDisplay.workArea.width - width) / 2);
-    const y = targetDisplay.workArea.y + Math.round((targetDisplay.workArea.height - height) / 2);
-
-    const window = new BrowserWindow({
-      width,
-      height,
-      x,
-      y,
-      minWidth: 960,
-      minHeight: 700,
-      title: 'Sally Browser',
-      autoHideMenuBar: true,
-      show: false,
-      webPreferences: {
-        partition: BROWSER_PARTITION,
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-      },
-    });
-
-    const tab: BrowserTabState = {
-      id: `tab-${this.nextTabOrdinal++}`,
-      window,
-      createdAt: Date.now(),
-    };
-
-    window.webContents.setWindowOpenHandler(({ url }) => {
-      void this.openTab(url, { activate: true });
-      return { action: 'deny' };
-    });
-
-    window.webContents.on('did-create-window', (childWindow) => {
-      childWindow.close();
-    });
-
-    window.on('focus', () => {
-      if (this.tabs.some((entry) => entry.id === tab.id)) {
-        this.activeTabId = tab.id;
-      }
-    });
-
-    window.on('closed', () => {
-      this.handleClosedTab(tab.id);
-    });
-
-    this.tabs.push(tab);
-    await this.ensurePageUrl(window, this.coerceUrl(initialUrl));
-
-    if (activate || !this.activeTabId) {
-      await this.showTab(tab.id);
-    } else {
-      window.hide();
-    }
-
-    return tab;
-  }
-
-  private handleClosedTab(tabId: string): void {
-    this.tabs = this.tabs.filter((tab) => tab.id !== tabId && !tab.window.isDestroyed());
-    if (this.activeTabId === tabId) {
-      const nextTab = this.tabs[0] || null;
-      this.activeTabId = nextTab?.id || null;
-      if (nextTab) {
-        void this.showTab(nextTab.id);
-      }
-    }
-  }
-
-  private async showTab(tabId: string): Promise<void> {
-    this.cleanupDeadTabs();
-    const nextTab = this.tabs.find((tab) => tab.id === tabId);
-    if (!nextTab || nextTab.window.isDestroyed()) {
-      return;
-    }
-
-    for (const tab of this.tabs) {
-      if (tab.window.isDestroyed()) {
-        continue;
-      }
-
-      if (tab.id === tabId) {
-        if (tab.window.isMinimized()) {
-          tab.window.restore();
-        }
-        tab.window.show();
-        tab.window.focus();
-      } else {
-        tab.window.hide();
-      }
-    }
-
-    this.activeTabId = nextTab.id;
-  }
-
-  private getActiveTab(): BrowserTabState | null {
-    this.cleanupDeadTabs();
-    if (this.activeTabId) {
-      const tab = this.tabs.find((entry) => entry.id === this.activeTabId);
-      if (tab) {
-        return tab;
-      }
-    }
-
-    const fallback = this.tabs[0] || null;
-    this.activeTabId = fallback?.id || null;
-    return fallback;
-  }
-
-  private getLiveTabs(): BrowserTabState[] {
-    this.cleanupDeadTabs();
-    return [...this.tabs];
-  }
-
-  private cleanupDeadTabs(): void {
-    this.tabs = this.tabs.filter((tab) => !tab.window.isDestroyed());
-    if (this.activeTabId && !this.tabs.some((tab) => tab.id === this.activeTabId)) {
-      this.activeTabId = this.tabs[0]?.id || null;
-    }
-  }
-
-  private toTabInfo(tab: BrowserTabState): BrowserTabInfo {
-    return {
-      id: tab.id,
-      title: tab.window.webContents.getTitle(),
-      url: tab.window.webContents.getURL(),
-      isActive: tab.id === this.activeTabId,
-    };
-  }
-
   private hasRealContent(url: string): boolean {
     return Boolean(url && url !== 'about:blank' && !url.startsWith('chrome://newtab'));
   }
@@ -707,7 +832,7 @@ class BrowserService {
   private async resolveNavigationTarget(target: string): Promise<string> {
     const trimmed = target.trim();
     if (!trimmed) {
-      return 'https://www.google.com';
+      return DEFAULT_START_URL;
     }
 
     if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || /\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s]*)?\b/i.test(trimmed)) {
@@ -751,11 +876,11 @@ class BrowserService {
     }
   }
 
-  private async waitForNavigationResult(window: BrowserWindow, beforeUrl: string, targetUrl: string): Promise<string> {
+  private async waitForNavigationResult(contents: WebContents, beforeUrl: string, targetUrl: string): Promise<string> {
     await this.waitForSettle('navigate');
 
     const deadline = Date.now() + 8_000;
-    let currentUrl = window.webContents.getURL();
+    let currentUrl = contents.getURL();
 
     while (Date.now() < deadline) {
       if (currentUrl && currentUrl !== beforeUrl) {
@@ -767,7 +892,7 @@ class BrowserService {
       }
 
       await new Promise((resolve) => setTimeout(resolve, 250));
-      currentUrl = window.webContents.getURL();
+      currentUrl = contents.getURL();
     }
 
     return currentUrl;
@@ -776,7 +901,7 @@ class BrowserService {
   private coerceUrl(url: string): string {
     const trimmed = url.trim();
     if (!trimmed) {
-      return 'https://www.google.com';
+      return DEFAULT_START_URL;
     }
 
     if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
@@ -786,17 +911,17 @@ class BrowserService {
     return `https://${trimmed}`;
   }
 
-  private async ensurePageUrl(window: BrowserWindow, url: string): Promise<void> {
-    const currentUrl = window.webContents.getURL();
+  private async ensurePageUrl(contents: WebContents, url: string): Promise<void> {
+    const currentUrl = contents.getURL();
     if (currentUrl === url) {
       return;
     }
 
-    await window.loadURL(url);
+    await contents.loadURL(url);
   }
 
-  private async extractPageContext(window: BrowserWindow): Promise<PageContext> {
-    return this.executeInPage(window, runDomTaskInPage, {
+  private async extractPageContext(contents: WebContents): Promise<PageContext> {
+    return this.executeInPage(contents, runDomTaskInPage, {
       mode: 'snapshot',
       options: {
         maxInteractiveElements: MAX_INTERACTIVE_ELEMENTS,
@@ -807,22 +932,22 @@ class BrowserService {
   }
 
   private async runDomAction(action: GeminiAction): Promise<{ ok: boolean; message: string }> {
-    const window = await this.launch();
-    return this.executeInPage(window, runDomTaskInPage, {
+    const tab = this.getActiveTab() || await this.createTab(DEFAULT_START_URL, true);
+    return this.executeInPage(tab.view.webContents, runDomTaskInPage, {
       mode: 'action',
       action,
     }) as Promise<{ ok: boolean; message: string }>;
   }
 
-  private async executeInPage<T, A>(window: BrowserWindow, fn: (args: A) => T, args: A): Promise<T> {
+  private async executeInPage<T, A>(contents: WebContents, fn: (args: A) => T, args: A): Promise<T> {
     const script = `(${fn.toString()})(${JSON.stringify(args)})`;
-    return window.webContents.executeJavaScript(script, true) as Promise<T>;
+    return contents.executeJavaScript(script, true) as Promise<T>;
   }
 
   private async sendKeyPress(keyCode: string): Promise<void> {
-    const window = await this.launch();
-    window.focus();
-    const contents = window.webContents;
+    const tab = this.getActiveTab() || await this.createTab(DEFAULT_START_URL, true);
+    const contents = tab.view.webContents;
+    contents.focus();
     contents.sendInputEvent({ type: 'keyDown', keyCode });
     if (keyCode.length === 1) {
       contents.sendInputEvent({ type: 'char', keyCode });
@@ -831,12 +956,134 @@ class BrowserService {
   }
 
   private async sendText(text: string): Promise<void> {
-    const window = await this.launch();
-    window.focus();
-    const contents = window.webContents;
+    const tab = this.getActiveTab() || await this.createTab(DEFAULT_START_URL, true);
+    const contents = tab.view.webContents;
+    contents.focus();
     for (const char of text) {
       contents.sendInputEvent({ type: 'char', keyCode: char });
     }
+  }
+
+  private isGmailComposeAction(action: GeminiAction, currentUrl: string): boolean {
+    if (action.type !== 'click' || !currentUrl.includes('mail.google.com')) {
+      return false;
+    }
+
+    const texts = [action.selector, action.value]
+      .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+      .join(' ');
+    return /\b(compose|new email|new message)\b/i.test(texts);
+  }
+
+  private async inspectGmailDraftWithRetry(attempts = 4, intervalMs = 250): Promise<GmailDraftInspection | null> {
+    let lastDraft: GmailDraftInspection | null = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      lastDraft = await this.inspectGmailDraft();
+      if (lastDraft?.composeOpen) {
+        return lastDraft;
+      }
+
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    }
+
+    return lastDraft;
+  }
+
+  private async tryGmailComposeButtonFallback(contents: WebContents): Promise<boolean> {
+    return contents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const isVisible = (element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (Number(style.opacity || '1') <= 0.05) return false;
+        return rect.width >= 4 && rect.height >= 4 && rect.bottom >= 0 && rect.right >= 0;
+      };
+
+      const candidates = Array.from(document.querySelectorAll('div[role="button"], button, [gh="cm"], [aria-label], [data-tooltip]'))
+        .filter((element) => element instanceof HTMLElement)
+        .filter((element) => isVisible(element))
+        .map((element) => {
+          const label = normalize(
+            element.getAttribute('aria-label')
+            || element.getAttribute('data-tooltip')
+            || element.getAttribute('title')
+            || element.textContent
+          );
+          const gh = normalize(element.getAttribute('gh'));
+          const score = (
+            (gh === 'cm' ? 220 : 0)
+            + (label === 'compose' ? 180 : 0)
+            + (label.startsWith('compose') ? 120 : 0)
+            + (label.includes('new message') ? 110 : 0)
+            + (element.getAttribute('role') === 'button' ? 30 : 0)
+            + (element.tagName.toLowerCase() === 'button' ? 20 : 0)
+          );
+          return { element, score };
+        })
+        .filter((entry) => entry.score > 0)
+        .sort((left, right) => right.score - left.score);
+
+      const target = candidates[0]?.element;
+      if (!(target instanceof HTMLElement)) {
+        return false;
+      }
+
+      target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      target.focus();
+      const rect = target.getBoundingClientRect();
+      const eventInit = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+        button: 0,
+      };
+
+      target.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+      target.dispatchEvent(new MouseEvent('mousedown', eventInit));
+      target.dispatchEvent(new PointerEvent('pointerup', eventInit));
+      target.dispatchEvent(new MouseEvent('mouseup', eventInit));
+      target.click();
+      return true;
+    })()`, true) as Promise<boolean>;
+  }
+
+  private async verifyOrRecoverDomClick(
+    action: GeminiAction,
+    domResult: { ok: boolean; message: string },
+  ): Promise<{ ok: boolean; message: string }> {
+    const tab = this.getActiveTab();
+    if (!tab) {
+      return domResult;
+    }
+
+    const currentUrl = tab.view.webContents.getURL();
+    if (!this.isGmailComposeAction(action, currentUrl)) {
+      return domResult;
+    }
+
+    const initialDraftState = await this.inspectGmailDraftWithRetry();
+    if (initialDraftState?.composeOpen) {
+      return domResult.ok
+        ? domResult
+        : { ok: true, message: 'Opened Gmail compose' };
+    }
+
+    const fallbackTriggered = await this.tryGmailComposeButtonFallback(tab.view.webContents);
+    if (fallbackTriggered) {
+      const recoveredDraftState = await this.inspectGmailDraftWithRetry();
+      if (recoveredDraftState?.composeOpen) {
+        return { ok: true, message: 'Opened Gmail compose' };
+      }
+    }
+
+    return { ok: false, message: 'gmail_compose_not_opened' };
   }
 
   private mapDomFailure(action: GeminiAction, message: string): string {

@@ -61,6 +61,58 @@ export interface AudioDeviceInfo {
   label: string;
 }
 
+export interface BrowserTabState {
+  id: string;
+  title: string;
+  url: string;
+  isActive: boolean;
+  isLoading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
+
+export interface BrowserUiState {
+  tabs: BrowserTabState[];
+  activeTabId: string | null;
+  activeTitle: string;
+  activeUrl: string;
+  isLoading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
+
+export interface BrowserActionRequest {
+  type: string;
+  selector?: string;
+  value?: string;
+  url?: string;
+  index?: number;
+  tabId?: string;
+  targetId?: string;
+  framePath?: number[];
+  shadowPath?: number[];
+}
+
+export interface BrowserDebugSnapshot {
+  pageUrl: string;
+  pageTitle: string;
+  headings: string[];
+  visibleMessages: string[];
+  interactiveCount: number;
+  activeTabId: string | null;
+  tabCount: number;
+}
+
+export interface GmailDraftInspectionInfo {
+  url: string;
+  title: string;
+  composeOpen: boolean;
+  toValue: string | null;
+  subject: string | null;
+  bodyText: string;
+  sendVisible: boolean;
+}
+
 export interface AutoConfirmationListenPayload {
   maxDurationMs: number;
   trailingSilenceMs: number;
@@ -98,8 +150,22 @@ export interface IpcChannels {
   // External
   'sally:open-external': { request: string; response: void; broadcast: never };
 
+  // Browser shell
+  'browser:get-state': { request: void; response: BrowserUiState; broadcast: never };
+  'browser:new-tab': { request: { url?: string } | void; response: BrowserUiState; broadcast: never };
+  'browser:switch-tab': { request: { tabId: string }; response: BrowserUiState; broadcast: never };
+  'browser:close-tab': { request: { tabId: string }; response: BrowserUiState; broadcast: never };
+  'browser:navigate': { request: { url: string }; response: BrowserUiState; broadcast: never };
+  'browser:go-back': { request: void; response: BrowserUiState; broadcast: never };
+  'browser:go-forward': { request: void; response: BrowserUiState; broadcast: never };
+  'browser:reload': { request: void; response: BrowserUiState; broadcast: never };
+  'browser:get-snapshot': { request: void; response: BrowserDebugSnapshot | null; broadcast: never };
+  'browser:execute-action': { request: BrowserActionRequest; response: string; broadcast: never };
+  'browser:inspect-gmail-draft': { request: void; response: GmailDraftInspectionInfo | null; broadcast: never };
+
   // Window
   'window:show-config': { request: void; response: void; broadcast: never };
+  'window:show-browser': { request: void; response: void; broadcast: never };
   'window:set-pill-layout': { request: { layout: SallyBarLayout }; response: void; broadcast: never };
   'window:hide-pill': { request: void; response: void; broadcast: never };
   'window:show-pill': { request: void; response: void; broadcast: never };
@@ -116,6 +182,7 @@ export interface IpcChannels {
   'sally:tts-stop': { request: never; response: never; broadcast: void };
   'sally:tts-playback-error': { request: { id: string; message: string }; response: never; broadcast: never };
   'sally:mic-muted-changed': { request: never; response: never; broadcast: { muted: boolean } };
+  'browser:state-changed': { request: never; response: never; broadcast: BrowserUiState };
 
   // Hotkey events (main -> sally bar)
   'hotkey:start-recording': { request: never; response: never; broadcast: void };
