@@ -213,22 +213,22 @@ Automated deployment option:
 
 ```bash
 cd sally-backend
-gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_GEMINI_API_KEY="<your-gemini-api-key>"
+gcloud builds submit --config cloudbuild.yaml
 ```
 
 One-command scripted deployment option:
 
 ```bash
 cd sally-backend
-GEMINI_API_KEY="<your-gemini-api-key>" ./deploy.sh
+./deploy.sh
 ```
 
 What this automates:
 - Build the backend container image
 - Push the image to Artifact Registry
 - Deploy the service to Google Cloud Run
-- Inject the required `GEMINI_API_KEY` environment variable at deploy time
+- Inject the Gemini key from Secret Manager at deploy time
+- Enable backend writes to Google Cloud Logging
 
 This deployment automation is included directly in the public repository for review.
 
@@ -239,20 +239,42 @@ The Sally Vision Backend runs on Google Cloud Run and proxies Gemini API calls.
 ```bash
 cd sally-backend
 
-# Set your Gemini API key
-export GEMINI_API_KEY=<your-gemini-api-key>
+# One-time bootstrap
+gcloud services enable secretmanager.googleapis.com
+gcloud artifacts repositories create sally \
+  --repository-format=docker \
+  --location=us-central1 \
+  --description="Sally backend images"
+
+# Create the Gemini secret once, or add a new version later
+printf '%s' "<your-gemini-api-key>" | \
+  gcloud secrets create sally-gemini-api-key --data-file=- \
+  || printf '%s' "<your-gemini-api-key>" | gcloud secrets versions add sally-gemini-api-key --data-file=-
 
 # Deploy to Cloud Run (requires gcloud CLI)
 ./deploy.sh
 
-# Or deploy manually:
-gcloud run deploy sally-backend \
-  --source . --platform managed \
-  --region us-central1 --allow-unauthenticated \
-  --set-env-vars "GEMINI_API_KEY=${GEMINI_API_KEY}"
+# Or use the checked-in Cloud Build path:
+gcloud builds submit --config cloudbuild.yaml
 ```
 
 After deploying, copy the Cloud Run URL and paste it into Sally's Settings > Sally Vision Backend URL field.
+
+Cloud Logging note:
+- backend logging is enabled only when Cloud Run has `ENABLE_CLOUD_LOGGING=true`
+- desktop forwarding is controlled from Settings > `Cloud Logging`
+- when both are enabled, desktop events are forwarded to `POST /api/log` and written to the `sally-agent-log` stream
+
+Verification:
+
+```bash
+# Check the deployed backend URL and health payload
+gcloud run services describe sally-backend --region us-central1 --format="value(status.url)"
+curl https://<your-cloud-run-url>/health
+
+# Confirm backend and forwarded desktop logs are arriving
+gcloud logging read 'logName:"sally-agent-log"' --limit 20 --format=json
+```
 
 ## Reproducible Testing Instructions
 

@@ -53,6 +53,7 @@ export interface SallyConfig {
   hasGeminiKey: boolean;
   geminiBackendUrl: string;
   autoResearchScreenQuestions: boolean;
+  cloudLoggingEnabled: boolean;
   audioDevice: string;
 }
 
@@ -157,6 +158,8 @@ export interface IpcChannels {
   'sally:get-gemini-backend-url': { request: void; response: string; broadcast: never };
   'sally:set-auto-research-screen-questions': { request: boolean; response: void; broadcast: never };
   'sally:get-auto-research-screen-questions': { request: void; response: boolean; broadcast: never };
+  'sally:set-cloud-logging-enabled': { request: boolean; response: void; broadcast: never };
+  'sally:get-cloud-logging-enabled': { request: void; response: boolean; broadcast: never };
   'sally:set-audio-device': { request: string; response: void; broadcast: never };
   'sally:get-audio-device': { request: void; response: string; broadcast: never };
 

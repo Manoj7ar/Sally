@@ -73,6 +73,17 @@ export class ApiKeyManager {
     return typeof value === 'boolean' ? value : false;
   }
 
+  // ============ CLOUD LOGGING ============ 
+
+  setCloudLoggingEnabled(enabled: boolean): void {
+    this.storage.set(STORE_KEYS.CLOUD_LOGGING_ENABLED, enabled);
+  }
+
+  getCloudLoggingEnabled(): boolean {
+    const value = this.storage.get(STORE_KEYS.CLOUD_LOGGING_ENABLED);
+    return typeof value === 'boolean' ? value : true;
+  }
+
   // ============ GENERIC KEY METHODS (delegate by current provider) ============
 
   setApiKey(provider: SallyProvider, key: string): void {

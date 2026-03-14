@@ -188,6 +188,7 @@ export default function ConfigWindow() {
   const [elevenLabsKey, setElevenLabsKey] = useState('');
   const [geminiBackendUrl, setGeminiBackendUrl] = useState('');
   const [autoResearchScreenQuestions, setAutoResearchScreenQuestions] = useState(false);
+  const [cloudLoggingEnabled, setCloudLoggingEnabled] = useState(true);
   const [backendHealth, setBackendHealth] = useState<{
     status: 'idle' | 'configured' | 'checking' | 'connected' | 'failed';
     model: string | null;
@@ -226,6 +227,7 @@ export default function ConfigWindow() {
       setConfig(cfg);
       setGeminiBackendUrl(cfg.geminiBackendUrl);
       setAutoResearchScreenQuestions(cfg.autoResearchScreenQuestions);
+      setCloudLoggingEnabled(cfg.cloudLoggingEnabled);
       if (cfg.geminiBackendUrl.trim()) {
         setBackendHealth({ status: 'configured', model: null });
         void checkBackendHealth(cfg.geminiBackendUrl);
@@ -292,6 +294,13 @@ export default function ConfigWindow() {
     const nextValue = !autoResearchScreenQuestions;
     setAutoResearchScreenQuestions(nextValue);
     await ipc.invoke('sally:set-auto-research-screen-questions', nextValue);
+    await loadConfig();
+  };
+
+  const handleToggleCloudLogging = async () => {
+    const nextValue = !cloudLoggingEnabled;
+    setCloudLoggingEnabled(nextValue);
+    await ipc.invoke('sally:set-cloud-logging-enabled', nextValue);
     await loadConfig();
   };
 
@@ -560,6 +569,70 @@ export default function ConfigWindow() {
               </span>
             </div>
           )}
+        </Card>
+
+        <Card>
+          <CardHeader
+            title="Cloud Logging"
+            description="Forward structured Sally desktop activity to Google Cloud Logging through the Sally Vision Backend."
+            indicator={cloudLoggingEnabled ? 'green' : 'gray'}
+          />
+          <button
+            onClick={handleToggleCloudLogging}
+            style={{
+              width: '100%',
+              padding: '12px 14px',
+              borderRadius: 10,
+              border: `1px solid ${THEME.border.subtle}`,
+              background: cloudLoggingEnabled ? THEME.status.successSoft : THEME.surface.base,
+              color: THEME.text.primary,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              textAlign: 'left',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                Send Desktop Events to Cloud Logging
+              </div>
+              <div style={{ fontSize: 12, color: THEME.text.secondary }}>
+                {cloudLoggingEnabled
+                  ? 'Desktop events are queued locally and forwarded to the backend log endpoint when a backend URL is configured.'
+                  : 'Desktop events stay local only. Turn this on to feed hackathon demo logs into Google Cloud Logging.'}
+              </div>
+            </div>
+            <div
+              style={{
+                width: 42,
+                height: 24,
+                borderRadius: 999,
+                background: cloudLoggingEnabled ? THEME.status.success : THEME.border.muted,
+                position: 'relative',
+                flexShrink: 0,
+                transition: 'background 0.15s',
+              }}
+            >
+              <div
+                style={{
+                  width: 18,
+                  height: 18,
+                  borderRadius: '50%',
+                  background: THEME.surface.base,
+                  position: 'absolute',
+                  top: 3,
+                  left: cloudLoggingEnabled ? 21 : 3,
+                  transition: 'left 0.15s',
+                  boxShadow: THEME.shadow.small,
+                }}
+              />
+            </div>
+          </button>
+          <p style={{ fontSize: 11, color: THEME.text.secondary, margin: '10px 2px 0' }}>
+            Requires a backend URL and a Cloud Run deployment with <code>ENABLE_CLOUD_LOGGING=true</code>.
+          </p>
         </Card>
 
         <Card>

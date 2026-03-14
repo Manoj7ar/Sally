@@ -2,8 +2,7 @@
 # Automates: build container → push to Artifact Registry → deploy to Cloud Run
 #
 # Usage:
-#   gcloud builds submit --config cloudbuild.yaml \
-#     --substitutions=_GEMINI_API_KEY="<your-gemini-api-key>"
+#   gcloud builds submit --config cloudbuild.yaml
 #
 # Or set up a Cloud Build trigger on GitHub push to auto-deploy.
 
@@ -13,9 +12,9 @@ steps:
     args:
       - 'build'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/sally/sally-backend:${SHORT_SHA}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${BUILD_ID}'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/sally/sally-backend:latest'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:latest'
       - '.'
 
   # Step 2: Push to Artifact Registry
@@ -23,7 +22,7 @@ steps:
     args:
       - 'push'
       - '--all-tags'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/sally/sally-backend'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}'
 
   # Step 3: Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -31,16 +30,18 @@ steps:
     args:
       - 'run'
       - 'deploy'
-      - 'sally-backend'
+      - '${_SERVICE_NAME}'
       - '--image'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/sally/sally-backend:${SHORT_SHA}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${BUILD_ID}'
       - '--region'
       - '${_REGION}'
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
+      - '--set-secrets'
+      - 'GEMINI_API_KEY=${_SECRET_NAME}:latest'
       - '--set-env-vars'
-      - 'GEMINI_API_KEY=${_GEMINI_API_KEY}'
+      - 'ENABLE_CLOUD_LOGGING=true'
       - '--memory'
       - '512Mi'
       - '--cpu'
@@ -56,7 +57,9 @@ steps:
 
 substitutions:
   _REGION: us-central1
-  _GEMINI_API_KEY: ''
+  _REPOSITORY: sally
+  _SERVICE_NAME: sally-backend
+  _SECRET_NAME: sally-gemini-api-key
 
 options:
   logging: CLOUD_LOGGING_ONLY

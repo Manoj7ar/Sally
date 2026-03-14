@@ -20,6 +20,7 @@ export function registerIpcHandlers(): void {
       hasGeminiKey: apiKeyManager.hasGeminiApiKey(),
       geminiBackendUrl: apiKeyManager.getGeminiBackendUrl(),
       autoResearchScreenQuestions: apiKeyManager.getAutoResearchScreenQuestions(),
+      cloudLoggingEnabled: apiKeyManager.getCloudLoggingEnabled(),
       audioDevice: store.get(STORE_KEYS.AUDIO_DEVICE) || 'default',
     };
   });
@@ -74,6 +75,14 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('sally:get-auto-research-screen-questions', () => {
     return apiKeyManager.getAutoResearchScreenQuestions();
+  });
+
+  ipcMain.handle('sally:set-cloud-logging-enabled', (_e, enabled: boolean) => {
+    apiKeyManager.setCloudLoggingEnabled(enabled);
+  });
+
+  ipcMain.handle('sally:get-cloud-logging-enabled', () => {
+    return apiKeyManager.getCloudLoggingEnabled();
   });
 
   // ── Audio ──

@@ -202,6 +202,8 @@ Grounding rules:
 - Base your narration on what is actually visible.
 - Use the page URL, title, and structured page context to verify where you are.
 - Treat the screenshot as the primary truth and the page context as a grounding aid.
+- NEVER suggest clicking, filling, or interacting with any element that is NOT visible in the screenshot or listed in pageContext. If the target element does not exist, set action to null and narrate that the element is not available.
+- Do not fabricate selectors, targetIds, or CSS paths that are not grounded in the provided pageContext or screenshot.
 - If unsure, say so instead of guessing.
 
 Action rules:

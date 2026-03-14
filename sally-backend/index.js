@@ -53,7 +53,11 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', model: GEMINI_MODEL });
+  res.json({
+    status: 'ok',
+    model: GEMINI_MODEL,
+    cloudLoggingEnabled,
+  });
 });
 
 app.post('/api/log', async (req, res) => {
@@ -610,9 +614,11 @@ Your job:
 Rules:
 - Base your answer on what is visible.
 - Use the screenshot as the primary truth and page context as a grounding aid.
+- NEVER suggest clicking, filling, or interacting with any element that is NOT visible in the screenshot or listed in pageContext. If the target element does not exist, set action to null and narrate that the element is not available.
 - Prefer targetId from pageContext when a visible control clearly matches.
 - Use visible labels, text, roles, and ordinal position for selectors.
 - Include framePath or shadowPath only when they help disambiguate the target.
+- Do not fabricate selectors, targetIds, or CSS paths that are not grounded in the provided pageContext or screenshot.
 - Use open_tab when the task benefits from researching or comparing something in another tab.
 - Use switch_tab when the target page is already open in another tab.
 - Keep narration short and natural because it will be spoken aloud.`;
