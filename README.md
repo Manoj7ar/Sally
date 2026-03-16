@@ -133,7 +133,7 @@ Sally also has an optional structured logging path for hackathon demos:
 - **Multi-step task completion** — Handles complex tasks autonomously across multiple pages
 - **Optional Cloud Logging integration** — Backend and desktop activity can flow into Google Cloud Logging at deploy time without changing local behavior
 - **Floating assistant bar** — Minimal, non-intrusive UI with live state feedback
-- **Configurable settings** — Manage Gemini, ElevenLabs, backend URL, auto research, and audio from the settings window
+- **Configurable settings** — Manage Gemini, ElevenLabs, backend URL, Cloud Logging, and screen-question behavior from the settings window
 
 ## Getting Started
 
@@ -157,14 +157,11 @@ npm install
 npm run dev
 ```
 
-Configure API keys in the Settings window, or set them in a `.env` file:
+Configure Gemini and ElevenLabs in the Settings window after launch.
 
-On Windows PowerShell, use `Copy-Item .env.example .env` instead of `cp`.
+If you are using a deployed Sally Vision Backend, paste the Cloud Run URL into Settings as well.
 
-```bash
-cp .env.example .env
-# Edit .env with your API keys
-```
+For the desktop app, Sally reads these values from its local settings store. The checked-in `.env.example` is only a reference for backend/deployment-related configuration and is not required for the desktop quickstart.
 
 ## AI IDE Quickstart
 
@@ -186,7 +183,7 @@ If you're using an AI coding IDE or agent, you can give it the prompt below afte
 > Important rules:
 >
 > - Do **not** ask me for API keys, secrets, or credentials during normal setup.
-> - Instead, tell me exactly where I should add them in the app UI or `.env` file when needed.
+> - Instead, tell me exactly where I should add them in the app UI for the desktop app, or in backend/cloud deployment config when relevant.
 > - Do **not** invent missing configuration values.
 > - Do **not** deploy anything automatically.
 > - If backend deployment is relevant, inspect `sally-backend/` first and then ask me whether I want you to deploy it to Google Cloud Run.
@@ -235,6 +232,16 @@ This deployment automation is included directly in the public repository for rev
 ### Cloud Run Backend Deployment
 
 The Sally Vision Backend runs on Google Cloud Run and proxies Gemini API calls.
+
+The desktop app works without installing `sally-backend/` separately. Use the backend folder only if you want to run or deploy the optional hosted Gemini proxy.
+
+For local backend debugging:
+
+```bash
+cd sally-backend
+npm install
+npm run dev
+```
 
 ```bash
 cd sally-backend
@@ -301,16 +308,13 @@ cd sally
 npm install
 npm run verify:desktop
 
-# 2. Configure API keys (Gemini + ElevenLabs required)
-
-# Option A: Environment file
-cp .env.example .env
-# Edit .env → set GEMINI_API_KEY and ELEVENLABS_API_KEY
-
-# Option B: Set keys in the app UI after launching (Settings window)
-
-# 3. Start the app
+# 2. Start the app
 npm run dev
+
+# 3. In the Settings window, add:
+# - Gemini API Key
+# - ElevenLabs API Key
+# - Optional: Sally Vision Backend URL
 ```
 
 ### Test Scenarios
