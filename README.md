@@ -206,6 +206,8 @@ Deployment automation files:
 - `sally-backend/deploy.sh` — One-command deployment script for Google Cloud Run
 - `sally-backend/Dockerfile` — Container definition used for deployment
 
+To learn more about the cloud deployment verification, watch this [video](https://www.tella.tv/video/sally-backend-2fpq).
+
 Automated deployment option:
 
 ```bash
