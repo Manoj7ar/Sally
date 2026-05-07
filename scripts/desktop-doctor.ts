@@ -12,6 +12,13 @@ function pass(message: string): void {
   console.log(`PASS ${message}`);
 }
 
+if (process.platform !== 'darwin') {
+  console.warn(
+    `WARN Sally targets macOS; detected "${process.platform}". Node and native checks still run — do a full smoke test on macOS before release.`,
+  );
+} else {
+  pass(`Platform ${process.platform} satisfies the macOS-only requirement.`);
+}
 const majorNodeVersion = Number.parseInt(process.versions.node.split('.')[0] || '0', 10);
 if (majorNodeVersion < 20) {
   fail(`Node ${process.versions.node} detected. Sally requires Node 20+ for the full platform.`);
