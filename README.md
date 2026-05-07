@@ -126,3 +126,65 @@ Structured activity logs are written **locally** (main process logger) only.
 - **Floating assistant bar** — Minimal, non-intrusive UI with live state feedback
 - **Configurable settings** — Manage Gemini, ElevenLabs, and screen-question behavior from the settings window
 
+## Getting Started
+
+### Prerequisites
+
+Sally requires Node.js **20+** and **macOS 11 (Big Sur) or later**. The app refuses to start on any other platform — see the macOS-only entry guard in [`electron/main/index.ts`](electron/main/index.ts) — because the windowing, hotkey registration, content-protection, dock menu, and permissions flow rely on AppKit-only APIs.
+
+You'll need API keys for:
+- Gemini is required for vision, browser automation, screen questions, and speech-to-text.
+- ElevenLabs is required for text-to-speech.
+
+### Desktop App
+
+Run `npm run verify:desktop` after installing dependencies to confirm the Node version and native hotkey module.
+
+```bash
+# Install dependencies
+npm install
+
+# Start the app in development mode
+npm run dev
+```
+
+Configure Gemini and ElevenLabs in the Settings window after launch.
+
+For the desktop app, Sally stores keys in its local settings store. The checked-in `.env.example` is an optional reference for environment-based setup and is not required for the desktop quickstart.
+
+## AI IDE Quickstart
+
+If you're using an AI coding IDE or agent, you can give it the prompt below after cloning the repository locally.
+
+### Suggested Prompt
+
+> Read `README.md` and `docs/architecture.md` fully so you understand the product, architecture, and current codebase before making changes.
+>
+> Then:
+>
+> 1. Set up the project locally.
+> 2. Install all required dependencies.
+> 3. Verify whether the project is fully up to date and working.
+> 4. Prefer validating the desktop app end to end.
+> 5. Run the appropriate checks, builds, and verification steps.
+> 6. Flag anything broken, outdated, duplicated, unnecessary, or inconsistent in the setup or codebase.
+>
+> Important rules:
+>
+> - Do **not** ask me for API keys, secrets, or credentials during normal setup.
+> - Instead, tell me exactly where I should add them in the app UI for the desktop app.
+> - Do **not** invent missing configuration values.
+> - Do **not** deploy anything automatically.
+> Focus on:
+>
+> - getting the desktop app working end to end
+> - verifying local setup
+> - checking for stale docs or broken scripts
+> - keeping the repo clean
+
+## Verification
+
+```bash
+npm run check
+```
+
