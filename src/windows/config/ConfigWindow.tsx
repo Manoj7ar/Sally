@@ -463,7 +463,7 @@ export default function ConfigWindow() {
     );
   }
 
-  const pushToTalkKeyLabel = getPushToTalkKeyLabel();
+  const pushToTalkKeyLabel = hotkeyBinding?.label ?? getPushToTalkKeyLabel();
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: THEME.surface.base, color: THEME.text.primary }}>
@@ -638,6 +638,84 @@ export default function ConfigWindow() {
               </div>
             </button>
           </div>
+        </Card>
+
+        {/* Push-to-talk Shortcut */}
+        <Card>
+          <CardHeader
+            title="Push-to-talk Shortcut"
+            description="Hold this key (or combination of keys) anywhere on your Mac to talk to Sally."
+            indicator={config.pushToTalkHotkeyActive ? 'green' : 'gray'}
+          />
+
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '14px 16px',
+              borderRadius: 12,
+              border: `1px solid ${isCapturingHotkey ? THEME.accent.primaryBorder : THEME.border.subtle}`,
+              background: isCapturingHotkey ? THEME.accent.primarySoft : THEME.surface.base,
+              marginBottom: 12,
+              transition: 'background 0.15s, border-color 0.15s',
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: THEME.text.secondary, marginBottom: 4, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                {isCapturingHotkey ? 'Press your shortcut' : 'Current shortcut'}
+              </div>
+              <div
+                style={{
+                  fontSize: 16,
+                  fontWeight: 600,
+                  color: isCapturingHotkey
+                    ? (hotkeyCapture && hotkeyCapture.keycodes.length > 0 ? THEME.accent.primary : THEME.text.secondary)
+                    : THEME.text.primary,
+                  fontFamily: 'monospace',
+                  letterSpacing: '0.02em',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {isCapturingHotkey
+                  ? (hotkeyCapture?.label ?? 'Press your shortcut…')
+                  : (hotkeyBinding?.label ?? 'Right Option')}
+              </div>
+              <div style={{ fontSize: 12, color: THEME.text.secondary, marginTop: 4 }}>
+                {isCapturingHotkey
+                  ? 'Hold the keys you want, then release them to save automatically.'
+                  : config.pushToTalkHotkeyActive
+                    ? 'The shortcut works system-wide while Sally is running.'
+                    : 'Grant Accessibility above to activate the shortcut.'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+              {isCapturingHotkey ? (
+                <SecondaryButton onClick={handleCancelHotkeyCapture}>Cancel</SecondaryButton>
+              ) : (
+                <PrimaryButton
+                  onClick={handleStartHotkeyCapture}
+                  disabled={!config.pushToTalkHotkeyActive}
+                >
+                  Change shortcut
+                </PrimaryButton>
+              )}
+              {!isCapturingHotkey && hotkeyBinding && hotkeyBinding.keycodes.length > 0 && (
+                <SecondaryButton onClick={handleResetHotkey}>Reset to default</SecondaryButton>
+              )}
+            </div>
+          </div>
+
+          {hotkeyError && (
+            <div style={{ fontSize: 12, color: THEME.status.danger, marginTop: 4 }}>{hotkeyError}</div>
+          )}
+          {!config.pushToTalkHotkeyActive && (
+            <div style={{ fontSize: 12, color: THEME.text.secondary, marginTop: 4 }}>
+              Sally needs the Accessibility permission above before it can listen for global shortcuts.
+            </div>
+          )}
         </Card>
 
         {/* AI Model */}

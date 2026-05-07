@@ -58,6 +58,27 @@ export interface SallyConfig {
   accessibilityTrusted: boolean;
   /** True when uIOhook successfully started for push-to-talk. */
   pushToTalkHotkeyActive: boolean;
+  /** Currently bound push-to-talk shortcut. */
+  pushToTalk: PushToTalkBinding;
+}
+
+export interface PushToTalkBinding {
+  /** uIOhook keycodes that must be held simultaneously to trigger Sally. */
+  keycodes: number[];
+  /** Friendly multi-segment label, e.g. "Right Option" or "Left Command + Space". */
+  label: string;
+}
+
+export interface PushToTalkCaptureProgress {
+  keycodes: number[];
+  label: string;
+  /** True once the captured combo has reached the max combo size. */
+  full: boolean;
+}
+
+export interface PushToTalkCaptureEnded {
+  saved: boolean;
+  reason?: 'user-cancelled' | 'timeout' | 'no-keys' | 'saved';
 }
 
 /**
@@ -186,6 +207,12 @@ export interface IpcChannels {
   'sally:get-audio-device': { request: void; response: string; broadcast: never };
   'sally:set-open-at-login': { request: boolean; response: void; broadcast: never };
 
+  // Push-to-talk shortcut
+  'sally:get-hotkey': { request: void; response: PushToTalkBinding; broadcast: never };
+  'sally:start-hotkey-capture': { request: void; response: PushToTalkCaptureProgress; broadcast: never };
+  'sally:cancel-hotkey-capture': { request: void; response: PushToTalkCaptureEnded; broadcast: never };
+  'sally:reset-hotkey': { request: void; response: PushToTalkBinding; broadcast: never };
+
   // macOS permissions
   'permissions:get-status': { request: void; response: MacPermissionsStatus; broadcast: never };
   'permissions:request-microphone': { request: void; response: MacPermissionState; broadcast: never };
@@ -236,6 +263,9 @@ export interface IpcChannels {
   'sally:tts-stop': { request: never; response: never; broadcast: void };
   'sally:tts-playback-error': { request: { id: string; message: string }; response: never; broadcast: never };
   'sally:mic-muted-changed': { request: never; response: never; broadcast: { muted: boolean } };
+  'sally:hotkey-changed': { request: never; response: never; broadcast: PushToTalkBinding };
+  'sally:hotkey-capture-progress': { request: never; response: never; broadcast: PushToTalkCaptureProgress };
+  'sally:hotkey-capture-ended': { request: never; response: never; broadcast: PushToTalkCaptureEnded };
   'browser:state-changed': { request: never; response: never; broadcast: BrowserUiState };
   'permissions:status-changed': { request: never; response: never; broadcast: MacPermissionsStatus };
 

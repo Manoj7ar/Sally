@@ -37,6 +37,14 @@ export const AGENT_LOOP = {
   maxDurationMs: 10 * 60 * 1000,
 } as const;
 
+/** Hard limits on the user-configurable push-to-talk shortcut. */
+export const PUSH_TO_TALK = {
+  /** Max keys allowed in a combo (modifier(s) + key). */
+  maxComboSize: 4,
+  /** Auto-cancel a capture session after this long with no activity. */
+  captureTimeoutMs: 8_000,
+} as const;
+
 export const STORE_KEYS = {
   WINDOW_STATE: 'windowState',
   AUDIO_DEVICE: 'audioDevice',
@@ -47,4 +55,6 @@ export const STORE_KEYS = {
   GEMINI_API_KEY: 'geminiApiKey',
   AUTO_RESEARCH_SCREEN_QUESTIONS: 'autoResearchScreenQuestions',
   OPEN_AT_LOGIN: 'openAtLogin',
+  /** uIOhook keycodes that must be held simultaneously to trigger Sally. */
+  PUSH_TO_TALK_KEYCODES: 'pushToTalkKeycodes',
 } as const;
