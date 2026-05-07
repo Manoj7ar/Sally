@@ -1,6 +1,6 @@
-// Simplified push-to-talk hotkey manager for Sally
-import { spawn, type ChildProcess } from 'node:child_process';
+// macOS push-to-talk hotkey manager for Sally
 import { uIOhook, UiohookKey, type UiohookKeyboardEvent } from 'uiohook-napi';
+import { PUSH_TO_TALK_KEY_LABEL } from '../../shared/pushToTalkLabel.js';
 import { microphoneManager } from './managers/microphoneManager.js';
 import { windowManager } from './windowManager.js';
 import { sessionManager } from './managers/sessionManager.js';
@@ -10,29 +10,8 @@ const PUSH_TO_TALK_KEY = UiohookKey.AltRight;
 const MIN_HOLD_DURATION = 300;
 const MAX_HOLD_DURATION_MS = 30000;
 const RESTART_GUARD_MS = 160;
-const WINDOWS_RIGHT_ALT_VK = 0xA5;
-const PUSH_TO_TALK_LABEL = process.platform === 'darwin' ? 'Right Option' : 'Right Alt';
 
-function createWindowsReleaseWatcherCommand(virtualKey: number): string {
-  const script = `
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public static class SallyKeyState {
-  [DllImport("user32.dll")]
-  public static extern short GetAsyncKeyState(int virtualKey);
-}
-"@;
-while (($true)) {
-  $isDown = ([SallyKeyState]::GetAsyncKeyState(${virtualKey}) -band 0x8000) -ne 0;
-  if (-not $isDown) { break; }
-  Start-Sleep -Milliseconds 15;
-}
-Write-Output "released";
-`;
-
-  return Buffer.from(script, 'utf16le').toString('base64');
-}
+const pushToTalkLabel = PUSH_TO_TALK_KEY_LABEL;
 
 class HotkeyManager {
   private isHotkeyPressed = false;
@@ -40,53 +19,64 @@ class HotkeyManager {
   private keyDownTime = 0;
   private lastReleaseTime = 0;
   private safetyTimeout: NodeJS.Timeout | null = null;
-  private releaseWatcher: ChildProcess | null = null;
+
+  private readonly handleHookKeydown = (e: UiohookKeyboardEvent): void => {
+    if (!this.isPushToTalkKey(e)) return;
+
+    const now = Date.now();
+    if (now - this.lastReleaseTime <= RESTART_GUARD_MS) {
+      mainLogger.warn(`[Hotkey] Ignoring ${pushToTalkLabel} bounce immediately after release`);
+      return;
+    }
+
+    if (this.isHotkeyPressed) {
+      mainLogger.warn(`[Hotkey] Ignoring duplicate ${pushToTalkLabel} keydown while already pressed`);
+      return;
+    }
+
+    if (microphoneManager.isMuted()) {
+      mainLogger.info(`[Hotkey] ${pushToTalkLabel} pressed while mic is muted`);
+      windowManager.showSallyBar();
+      return;
+    }
+
+    this.isHotkeyPressed = true;
+    this.keyDownTime = now;
+    this.clearSafetyTimeout();
+    this.safetyTimeout = setTimeout(() => {
+      if (this.isHotkeyPressed) this.forceKeyUp();
+    }, MAX_HOLD_DURATION_MS);
+
+    this.onKeyDown();
+  };
+
+  private readonly handleHookKeyup = (e: UiohookKeyboardEvent): void => {
+    if (this.isPushToTalkKey(e) && this.isHotkeyPressed) {
+      this.processKeyRelease();
+    }
+  };
+
+  isRegistered(): boolean {
+    return this.isStarted;
+  }
 
   register(): void {
-    mainLogger.info(`Registering push-to-talk hotkey (${PUSH_TO_TALK_LABEL})`);
+    if (this.isStarted) {
+      return;
+    }
 
-    uIOhook.on('keydown', (e) => {
-      if (!this.isPushToTalkKey(e)) return;
+    mainLogger.info(`Registering push-to-talk hotkey (${pushToTalkLabel})`);
 
-      const now = Date.now();
-      if (now - this.lastReleaseTime <= RESTART_GUARD_MS) {
-        mainLogger.warn(`[Hotkey] Ignoring ${PUSH_TO_TALK_LABEL} bounce immediately after release`);
-        return;
-      }
-
-      if (this.isHotkeyPressed) {
-        mainLogger.warn(`[Hotkey] Ignoring duplicate ${PUSH_TO_TALK_LABEL} keydown while already pressed`);
-        return;
-      }
-
-      if (microphoneManager.isMuted()) {
-        mainLogger.info(`[Hotkey] ${PUSH_TO_TALK_LABEL} pressed while mic is muted`);
-        windowManager.showSallyBar();
-        return;
-      }
-
-      this.isHotkeyPressed = true;
-      this.keyDownTime = now;
-      this.clearSafetyTimeout();
-      this.startPhysicalReleaseWatcher();
-      this.safetyTimeout = setTimeout(() => {
-        if (this.isHotkeyPressed) this.forceKeyUp();
-      }, MAX_HOLD_DURATION_MS);
-
-      this.onKeyDown();
-    });
-
-    uIOhook.on('keyup', (e) => {
-      if (this.isPushToTalkKey(e) && this.isHotkeyPressed) {
-        this.processKeyRelease();
-      }
-    });
+    uIOhook.on('keydown', this.handleHookKeydown);
+    uIOhook.on('keyup', this.handleHookKeyup);
 
     try {
       uIOhook.start();
       this.isStarted = true;
-      mainLogger.info(`Push-to-talk hotkey registered (${PUSH_TO_TALK_LABEL})`);
+      mainLogger.info(`Push-to-talk hotkey registered (${pushToTalkLabel})`);
     } catch (error) {
+      uIOhook.removeListener('keydown', this.handleHookKeydown);
+      uIOhook.removeListener('keyup', this.handleHookKeyup);
       mainLogger.error('Failed to start uIOhook:', error);
     }
   }
@@ -100,10 +90,8 @@ class HotkeyManager {
     this.keyDownTime = 0;
     this.lastReleaseTime = releasedAt;
     this.clearSafetyTimeout();
-    this.stopPhysicalReleaseWatcher();
 
     if (holdDuration < MIN_HOLD_DURATION) {
-      // Too short, cancel
       this.onCancel();
     } else {
       this.onKeyUp();
@@ -111,14 +99,13 @@ class HotkeyManager {
   }
 
   private onKeyDown(): void {
-    mainLogger.info(`[Hotkey] ${PUSH_TO_TALK_LABEL} pressed - start recording`);
+    mainLogger.info(`[Hotkey] ${pushToTalkLabel} pressed - start recording`);
     sessionManager.beginListeningFromHotkey();
     this.sendHotkeyMessage('hotkey:start-recording', { ensureVisible: true, syncState: true });
   }
 
   private onKeyUp(): void {
-    mainLogger.info(`[Hotkey] ${PUSH_TO_TALK_LABEL} released - stop recording`);
-    // Immediately transition to processing state so the UI updates instantly
+    mainLogger.info(`[Hotkey] ${pushToTalkLabel} released - stop recording`);
     sessionManager.setState('processing');
     this.sendHotkeyMessage('hotkey:stop-recording');
   }
@@ -134,59 +121,11 @@ class HotkeyManager {
     this.keyDownTime = 0;
     this.lastReleaseTime = Date.now();
     this.clearSafetyTimeout();
-    this.stopPhysicalReleaseWatcher();
     this.onKeyUp();
   }
 
   private isPushToTalkKey(e: UiohookKeyboardEvent): boolean {
     return e.keycode === PUSH_TO_TALK_KEY;
-  }
-
-  private startPhysicalReleaseWatcher(): void {
-    this.stopPhysicalReleaseWatcher();
-
-    if (process.platform !== 'win32') {
-      return;
-    }
-
-    const encodedCommand = createWindowsReleaseWatcherCommand(WINDOWS_RIGHT_ALT_VK);
-    const watcher = spawn(
-      'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedCommand],
-      {
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      },
-    );
-
-    this.releaseWatcher = watcher;
-
-    watcher.stdout.on('data', (chunk: Buffer) => {
-      const text = chunk.toString().trim().toLowerCase();
-      if (!text.includes('released')) return;
-      if (!this.isHotkeyPressed) return;
-
-      mainLogger.warn('[Hotkey] Physical Right Alt release detected by fallback watcher');
-      this.processKeyRelease();
-    });
-
-    watcher.once('exit', () => {
-      if (this.releaseWatcher === watcher) {
-        this.releaseWatcher = null;
-      }
-    });
-  }
-
-  private stopPhysicalReleaseWatcher(): void {
-    const watcher = this.releaseWatcher;
-    this.releaseWatcher = null;
-    if (!watcher || watcher.killed) return;
-
-    try {
-      watcher.kill();
-    } catch {
-      // Ignore cleanup failures from the release watcher.
-    }
   }
 
   private sendHotkeyMessage(
@@ -224,9 +163,14 @@ class HotkeyManager {
 
   unregisterAll(): void {
     this.clearSafetyTimeout();
-    this.stopPhysicalReleaseWatcher();
+    uIOhook.removeListener('keydown', this.handleHookKeydown);
+    uIOhook.removeListener('keyup', this.handleHookKeyup);
     if (this.isStarted) {
-      try { uIOhook.stop(); } catch { /* ignore */ }
+      try {
+        uIOhook.stop();
+      } catch {
+        /* ignore */
+      }
       this.isStarted = false;
     }
   }
