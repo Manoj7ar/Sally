@@ -1,28 +1,51 @@
-import { apiKeyManager } from '../managers/apiKeyManager.js';
-import { store, STORE_KEYS } from '../utils/store.js';
+// Local structured logging only (no remote Google Cloud pipeline)
 import { mainLogger } from '../utils/logger.js';
-import { CloudLogger } from './cloudLoggerCore.js';
-export const cloudLogger = new CloudLogger({
-  isCloudLoggingEnabled: () => Boolean(store.get(STORE_KEYS.CLOUD_LOGGING_ENABLED)),
-  getBackendUrl: () => apiKeyManager.getGeminiBackendUrl(),
-  sendBatch: async (backendUrl, entries) => {
-    const response = await fetch(`${backendUrl.replace(/\/$/, '')}/api/log`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entries }),
-      signal: AbortSignal.timeout(8_000),
-    });
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      throw new Error(`Cloud logging backend error: ${response.status} ${errorText}`);
-    }
-  },
-  writeLocal: (entry) => {
-    mainLogger.info(JSON.stringify(entry));
-  },
-  setInterval,
-  clearInterval,
-});
-export const cloudLog = cloudLogger.cloudLog.bind(cloudLogger);
-export { CloudLogger, FLUSH_INTERVAL_MS, MAX_BATCH_SIZE, normalizeSeverity } from './cloudLoggerCore.js';
+export type CloudLogSeverity =
+  | 'DEBUG'
+  | 'INFO'
+  | 'NOTICE'
+  | 'WARNING'
+  | 'ERROR'
+  | 'CRITICAL'
+  | 'ALERT'
+  | 'EMERGENCY'
+  | 'DEFAULT';
+
+export interface CloudLogEntry {
+  severity: CloudLogSeverity;
+  event: string;
+  metadata: Record<string, unknown>;
+  timestamp: string;
+}
+
+export function normalizeSeverity(severity: string): CloudLogSeverity {
+  const normalized = severity.trim().toUpperCase();
+  const allowed: CloudLogSeverity[] = [
+    'DEBUG',
+    'INFO',
+    'NOTICE',
+    'WARNING',
+    'ERROR',
+    'CRITICAL',
+    'ALERT',
+    'EMERGENCY',
+    'DEFAULT',
+  ];
+  return allowed.includes(normalized as CloudLogSeverity) ? (normalized as CloudLogSeverity) : 'DEFAULT';
+}
+
+export function cloudLog(severity: string, event: string, metadata: Record<string, unknown> = {}): void {
+  const entry: CloudLogEntry = {
+    severity: normalizeSeverity(severity),
+    event,
+    metadata,
+    timestamp: new Date().toISOString(),
+  };
+  mainLogger.info(JSON.stringify(entry));
+}
+
+export const cloudLogger = {
+  cloudLog,
+  shutdown: async (): Promise<void> => undefined,
+};
