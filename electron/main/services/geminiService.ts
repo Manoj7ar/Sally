@@ -1,8 +1,7 @@
-// Gemini Vision Service - optional backend with direct Gemini fallback
+// Gemini Vision Service — direct Gemini API (user API key) only
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyManager } from '../managers/apiKeyManager.js';
 import { GEMINI_MODEL } from '../utils/constants.js';
-import { mainLogger } from '../utils/logger.js';
 import { cloudLog } from './cloudLogger.js';
 import {
   normalizeBrowserRescueAnalysis as normalizeBrowserRescueAnalysisValue,
@@ -186,9 +185,6 @@ interface GeminiUsageMetadata {
   cachedContentTokenCount?: number;
 }
 
-const BACKEND_COOLDOWN_MS = 5 * 60 * 1000;
-const BACKEND_TIMEOUT_MS = 8000;
-
 const AGENT_SYSTEM_PROMPT = `You are Sally, a warm and confident AI assistant who helps people navigate and control the web using their voice.
 
 You work in an agentic loop: you receive a browser screenshot, the current URL and page title when available, optional structured page context, and a user instruction. Return one next step at a time.
@@ -369,32 +365,28 @@ Behavior rules:
 - Do not answer with long explanations.`;
 
 class GeminiService {
-  private backendCooldownUntil = 0;
   private directClient: GoogleGenAI | null = null;
   private directClientKey: string | null = null;
 
+  private requireGeminiApiKey(): void {
+    if (!apiKeyManager.hasGeminiApiKey()) {
+      throw new Error('Gemini API key is not configured. Add your key in Settings.');
+    }
+  }
+
   async interpretScreen(params: InterpretParams): Promise<GeminiInterpretResult> {
-    return this.withBackendFallback(
-      'interpret_screen',
-      (backendUrl) => this.interpretWithBackend(backendUrl, params),
-      () => this.interpretDirect(params),
-    );
+    this.requireGeminiApiKey();
+    return this.interpretDirect(params);
   }
 
   async answerScreenQuestion(params: ScreenQuestionParams): Promise<GeminiScreenQuestionResult> {
-    return this.withBackendFallback(
-      'answer_screen_question',
-      (backendUrl) => this.answerScreenQuestionWithBackend(backendUrl, params),
-      () => this.answerScreenQuestionDirect(params),
-    );
+    this.requireGeminiApiKey();
+    return this.answerScreenQuestionDirect(params);
   }
 
   async analyzeBrowserRescue(params: BrowserRescueParams): Promise<GeminiBrowserRescueAnalysis> {
-    return this.withBackendFallback(
-      'analyze_browser_rescue',
-      (backendUrl) => this.analyzeBrowserRescueWithBackend(backendUrl, params),
-      () => this.analyzeBrowserRescueDirect(params),
-    );
+    this.requireGeminiApiKey();
+    return this.analyzeBrowserRescueDirect(params);
   }
 
   async analyzeRescue(params: BrowserRescueParams): Promise<GeminiBrowserRescueAnalysis> {
@@ -402,146 +394,18 @@ class GeminiService {
   }
 
   async interpretUserRequest(params: InterpretUserRequestParams): Promise<GeminiUserRequestInterpretation> {
-    return this.withBackendFallback(
-      'interpret_user_request',
-      (backendUrl) => this.interpretUserRequestWithBackend(backendUrl, params),
-      () => this.interpretUserRequestDirect(params),
-    );
+    this.requireGeminiApiKey();
+    return this.interpretUserRequestDirect(params);
   }
 
   async planComplexTask(params: PlanComplexTaskParams): Promise<GeminiTaskPlan> {
-    return this.withBackendFallback(
-      'plan_complex_task',
-      (backendUrl) => this.planComplexTaskWithBackend(backendUrl, params),
-      () => this.planComplexTaskDirect(params),
-    );
+    this.requireGeminiApiKey();
+    return this.planComplexTaskDirect(params);
   }
 
   async generateEmailDraft(params: GenerateEmailDraftParams): Promise<GeminiEmailDraft> {
-    return this.withBackendFallback(
-      'generate_email_draft',
-      (backendUrl) => this.generateEmailDraftWithBackend(backendUrl, params),
-      () => this.generateEmailDraftDirect(params),
-    );
-  }
-
-  private async withBackendFallback<T>(
-    operation: string,
-    backendCall: (backendUrl: string) => Promise<T>,
-    directCall: () => Promise<T>,
-  ): Promise<T> {
-    const backendUrl = apiKeyManager.getGeminiBackendUrl();
-    let backendError: Error | null = null;
-
-    if (backendUrl && Date.now() >= this.backendCooldownUntil) {
-      try {
-        return await backendCall(backendUrl);
-      } catch (error) {
-        backendError = error instanceof Error ? error : new Error(String(error));
-        this.backendCooldownUntil = Date.now() + BACKEND_COOLDOWN_MS;
-        mainLogger.warn('[GeminiService] Backend failed, falling back to direct Gemini:', backendError.message);
-        cloudLog('WARNING', 'gemini_backend_fallback', {
-          operation,
-          backendUrl,
-          backendCooldownUntil: this.backendCooldownUntil,
-          error: this.serializeError(backendError),
-        });
-      }
-    }
-
-    if (apiKeyManager.hasGeminiApiKey()) {
-      return directCall();
-    }
-
-    if (backendError) {
-      throw backendError;
-    }
-
-    throw new Error('Gemini vision is not configured. Add a Gemini API key or a working backend URL.');
-  }
-
-  private async interpretWithBackend(backendUrl: string, params: InterpretParams): Promise<GeminiInterpretResult> {
-    const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/interpret-screen', params);
-    return this.normalizeInterpretResult(raw);
-  }
-
-  private async answerScreenQuestionWithBackend(
-    backendUrl: string,
-    params: ScreenQuestionParams,
-  ): Promise<GeminiScreenQuestionResult> {
-    const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/answer-screen-question', params);
-    return this.normalizeScreenQuestionResult(raw);
-  }
-
-  private async analyzeBrowserRescueWithBackend(
-    backendUrl: string,
-    params: BrowserRescueParams,
-  ): Promise<GeminiBrowserRescueAnalysis> {
-    const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/analyze-browser-rescue', params);
-    return this.normalizeBrowserRescueAnalysis(raw);
-  }
-
-  private async interpretUserRequestWithBackend(
-    backendUrl: string,
-    params: InterpretUserRequestParams,
-  ): Promise<GeminiUserRequestInterpretation> {
-    const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/interpret-user-request', params);
-    return this.normalizeUserRequestInterpretation(raw, params.transcript);
-  }
-
-  private async planComplexTaskWithBackend(
-    backendUrl: string,
-    params: PlanComplexTaskParams,
-  ): Promise<GeminiTaskPlan> {
-    const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/plan-complex-task', params);
-    return this.normalizeTaskPlan(raw, params.goal);
-  }
-
-  private async generateEmailDraftWithBackend(
-    backendUrl: string,
-    params: GenerateEmailDraftParams,
-  ): Promise<GeminiEmailDraft> {
-    const raw = await this.postToBackend<Record<string, unknown>>(backendUrl, '/api/generate-email-draft', params);
-    return this.normalizeEmailDraft(raw, params.brief);
-  }
-
-  private async postToBackend<T>(backendUrl: string, route: string, body: object): Promise<T> {
-    const url = `${backendUrl.replace(/\/$/, '')}${route}`;
-    const startedAt = Date.now();
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => '');
-        throw new Error(`Gemini backend error: ${response.status} ${errorText}`);
-      }
-
-      cloudLog('INFO', 'gemini_api_call', {
-        endpoint: 'backend',
-        route,
-        model: GEMINI_MODEL,
-        latencyMs: Date.now() - startedAt,
-        success: true,
-      });
-
-      return response.json() as Promise<T>;
-    } catch (error) {
-      cloudLog('ERROR', 'gemini_api_call', {
-        endpoint: 'backend',
-        route,
-        model: GEMINI_MODEL,
-        latencyMs: Date.now() - startedAt,
-        success: false,
-        error: this.serializeError(error),
-      });
-      throw error;
-    }
+    this.requireGeminiApiKey();
+    return this.generateEmailDraftDirect(params);
   }
 
   private getDirectClient(): GoogleGenAI {
@@ -778,7 +642,6 @@ Use switch_tab when the needed page is already open.`;
       screenshot: params.screenshot,
       maxOutputTokens: 512,
       temperature: 0.2,
-      fallback: { narration: 'I can see the screen.', action: null },
     });
 
     return this.normalizeInterpretResult(raw);
@@ -810,11 +673,6 @@ Respond with valid JSON only:
       screenshot: params.screenshot,
       maxOutputTokens: 384,
       temperature: 0.1,
-      fallback: {
-        answer: "I can see the screen, but I couldn't answer that clearly from the image.",
-        shouldResearch: false,
-        researchQuery: null,
-      },
     });
 
     return this.normalizeScreenQuestionResult(raw);
@@ -858,11 +716,6 @@ Guidance:
       screenshot: params.screenshot,
       maxOutputTokens: 512,
       temperature: 0.1,
-      fallback: {
-        pageSummary: 'I can inspect this page and help with the next step.',
-        blockers: [],
-        suggestions: [],
-      },
     });
 
     return this.normalizeBrowserRescueAnalysis(raw);
@@ -897,14 +750,6 @@ Guidance:
       prompt,
       maxOutputTokens: 256,
       temperature: 0.1,
-      fallback: {
-        intent: 'clarify',
-        confidence: 'low',
-        normalizedInstruction: null,
-        spokenResponse: null,
-        clarificationQuestion: 'What would you like me to do?',
-        browserAssistiveIntent: null,
-      },
     });
 
     return this.normalizeUserRequestInterpretation(raw, params.transcript);
@@ -941,25 +786,9 @@ Guidance:
       prompt,
       maxOutputTokens: 512,
       temperature: 0.1,
-      fallback: {
-        status: 'continue',
-        planSummary: params.goal,
-        activeSubtask: params.activeSubtask || params.goal,
-        subtasks: [
-          {
-            id: 's1',
-            title: params.activeSubtask || params.goal,
-            status: 'active',
-          },
-        ],
-        rememberedFacts: params.workingMemory || [],
-        clarificationQuestion: null,
-        completionNarration: null,
-        blockedReason: null,
-      },
     });
 
-    return this.normalizeTaskPlan(raw, params.goal);
+    return this.normalizeTaskPlan(raw);
   }
 
   private async generateEmailDraftDirect(params: GenerateEmailDraftParams): Promise<GeminiEmailDraft> {
@@ -985,13 +814,9 @@ Guidance:
       prompt,
       maxOutputTokens: 512,
       temperature: 0.4,
-      fallback: {
-        subject: 'Quick follow-up',
-        body: 'Hi,\n\nI wanted to follow up with you.\n\nBest,\nManoj',
-      },
     });
 
-    return this.normalizeEmailDraft(raw, params.brief);
+    return this.normalizeEmailDraft(raw);
   }
 
   private async generateJson(params: {
@@ -1001,7 +826,6 @@ Guidance:
     screenshot: string;
     maxOutputTokens: number;
     temperature: number;
-    fallback: Record<string, unknown>;
   }): Promise<Record<string, unknown>> {
     const genai = this.getDirectClient();
     const startedAt = Date.now();
@@ -1040,7 +864,7 @@ Guidance:
         usageMetadata: this.extractUsageMetadata(result),
       });
 
-      return this.parseJsonResponse(result.text || '', params.fallback);
+      return this.parseJsonResponse(result.text || '', params.operation);
     } catch (error) {
       cloudLog('ERROR', 'gemini_api_call', {
         endpoint: 'direct',
@@ -1060,7 +884,6 @@ Guidance:
     prompt: string;
     maxOutputTokens: number;
     temperature: number;
-    fallback: Record<string, unknown>;
   }): Promise<Record<string, unknown>> {
     const genai = this.getDirectClient();
     const startedAt = Date.now();
@@ -1091,7 +914,7 @@ Guidance:
         usageMetadata: this.extractUsageMetadata(result),
       });
 
-      return this.parseJsonResponse(result.text || '', params.fallback);
+      return this.parseJsonResponse(result.text || '', params.operation);
     } catch (error) {
       cloudLog('ERROR', 'gemini_api_call', {
         endpoint: 'direct',
@@ -1139,7 +962,8 @@ Guidance:
     };
   }
 
-  private parseJsonResponse(text: string, fallback: Record<string, unknown>): Record<string, unknown> {
+  private parseJsonResponse(text: string, operation: string): Record<string, unknown> {
+    const snippet = text.length > 400 ? `${text.slice(0, 400)}…` : text;
     try {
       return JSON.parse(text) as Record<string, unknown>;
     } catch {
@@ -1152,10 +976,12 @@ Guidance:
           try {
             return JSON.parse(jsonMatch[0]) as Record<string, unknown>;
           } catch {
-            return fallback;
+            /* fall through */
           }
         }
-        return fallback;
+        throw new Error(
+          `Gemini returned invalid JSON for ${operation}. First characters: ${snippet.replace(/\s+/g, ' ').trim()}`,
+        );
       }
     }
   }
@@ -1179,12 +1005,12 @@ Guidance:
     return normalizeUserRequestInterpretationValue(raw, transcript);
   }
 
-  private normalizeTaskPlan(raw: Record<string, unknown>, goal: string): GeminiTaskPlan {
-    return normalizeTaskPlanValue(raw, goal);
+  private normalizeTaskPlan(raw: Record<string, unknown>): GeminiTaskPlan {
+    return normalizeTaskPlanValue(raw);
   }
 
-  private normalizeEmailDraft(raw: Record<string, unknown>, brief: string): GeminiEmailDraft {
-    return normalizeEmailDraftValue(raw, brief);
+  private normalizeEmailDraft(raw: Record<string, unknown>): GeminiEmailDraft {
+    return normalizeEmailDraftValue(raw);
   }
 
 }
