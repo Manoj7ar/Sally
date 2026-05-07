@@ -13,7 +13,9 @@ import {
   extractRecipientEmailCandidate as extractRecipientEmailCandidateValue,
   isGuidedEmailComposeGoal as isGuidedEmailComposeGoalValue,
 } from './guidedEmailHeuristics.js';
+import { AGENT_LOOP } from '../utils/constants.js';
 import { mainLogger } from '../utils/logger.js';
+import { engagePowerGuard, releasePowerGuard } from '../utils/powerGuard.js';
 import type {
   GeminiAction,
   GeminiTaskPlan,
@@ -249,59 +251,6 @@ const BROWSER_ASSISTIVE_PATTERNS: Array<{ intent: BrowserAssistiveIntent; patter
   },
 ];
 
-const COMMAND_STARTERS = [
-  'what',
-  'where',
-  'describe',
-  'summarize',
-  'summarise',
-  'read',
-  'tell',
-  'open',
-  'go',
-  'search',
-  'find',
-  'click',
-  'press',
-  'scroll',
-  'turn',
-  'switch',
-  'set',
-  'navigate',
-  'fill',
-  'select',
-  'stop',
-  'cancel',
-  'help',
-  'show',
-  'explain',
-  'analyze',
-  'look',
-];
-
-const QUESTION_STYLE_STARTERS = ['what', 'where', 'tell', 'explain', 'analyze', 'look'];
-
-const UNCLEAR_TRANSCRIPT_PATTERNS = [
-  /^(?:i am|i'm|im)\b(?! looking\b)/i,
-  /^not sure\b/i,
-  /^i do(?:n't| do not) know\b/i,
-];
-
-const INCOMPLETE_COMMAND_PATTERNS = [
-  /^what am$/i,
-  /^what am i$/i,
-  /^what(?:'s| is)?$/i,
-  /^what(?:'s| is) the$/i,
-  /^describe$/i,
-  /^summari[sz]e$/i,
-  /^tell me$/i,
-  /^can you$/i,
-  /^open$/i,
-  /^search$/i,
-  /^click$/i,
-  /^go$/i,
-];
-
 // Smart home command patterns → rewritten as browser instructions
 const SMART_HOME_PATTERNS: Array<{ pattern: RegExp; rewrite: (match: RegExpMatchArray) => string }> = [
   // Lights
@@ -342,8 +291,6 @@ const SMART_HOME_PATTERNS: Array<{ pattern: RegExp; rewrite: (match: RegExpMatch
   },
 ];
 
-const MAX_ITERATIONS = 40;
-const MAX_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 const SETTLE_DELAY_MIN_MS = 800;
 const MAX_RECENT_TURNS = 3;
 const MAX_TASK_HISTORY = 16;
@@ -378,9 +325,32 @@ class SessionManager {
   private pendingRiskyAction: PendingRiskyAction | null = null;
   private pendingGuidedEmailPrompt: PendingGuidedEmailPrompt | null = null;
 
+  private stateBeforeSpeech: SallyState | null = null;
+
   initialize(): void {
     mainLogger.info('[SessionManager] Initialized (Electron browser + Gemini agentic mode)');
+    ttsService.setPlaybackLifecycle({
+      onBegun: () => {
+        const s = this.state;
+        if (s === 'idle' || s === 'listening' || s === 'speaking') {
+          return;
+        }
+        this.stateBeforeSpeech = s;
+        this.setState('speaking');
+      },
+      onEnded: () => {
+        if (this.state !== 'speaking' || this.stateBeforeSpeech === null) {
+          this.stateBeforeSpeech = null;
+          return;
+        }
+        const restore = this.stateBeforeSpeech;
+        this.stateBeforeSpeech = null;
+        this.setState(restore);
+      },
+    });
   }
+
+
 
   private clearWaitTimeout(): void {
     if (this.waitTimeout) {
@@ -875,47 +845,9 @@ class SessionManager {
     return false;
   }
 
-  private buildFallbackCompanyFacts(company: string): string[] {
-    const normalizedCompany = company.toLowerCase();
-
-    if (normalizedCompany === 'apple') {
-      return [
-        'Company summary: Apple is a technology company that builds premium consumer devices, software platforms, semiconductor technology, and subscription-based digital services.',
-        'Company fact 1: Apple makes flagship hardware products including the iPhone, Mac, iPad, Apple Watch, AirPods, and Vision Pro.',
-        'Company fact 2: Apple runs a tightly integrated software ecosystem across iOS, macOS, iPadOS, watchOS, and visionOS.',
-        'Company fact 3: Apple supports that ecosystem with services such as iCloud, the App Store, Apple Music, Apple TV+, Apple Pay, and AppleCare.',
-        'Company fact 4: Apple also designs its own silicon, including Apple silicon chips that power newer Macs and other devices.',
-        'Company fact 5: Apple positions privacy, device integration, and premium user experience as core parts of its brand and product strategy.',
-      ];
-    }
-
-    if (normalizedCompany === 'google') {
-      return [
-        'Company summary: Google is a technology company that provides internet products, software platforms, AI systems, developer tools, advertising infrastructure, and cloud services.',
-        'Company fact 1: Google operates widely used consumer products including Search, Gmail, YouTube, Maps, Chrome, Android, Photos, and Google Drive.',
-        'Company fact 2: Google supports businesses and developers through Google Cloud, Workspace, Firebase, and related infrastructure offerings.',
-        'Company fact 3: Google is investing heavily in AI across products and platforms, including Gemini and AI-powered experiences in Search, Workspace, and Cloud.',
-        'Company fact 4: Google also plays a major role in digital advertising and web discovery through Search, Ads, and its broader ecosystem reach.',
-        'Company fact 5: Google combines consumer scale, cloud infrastructure, mobile platforms, and AI research in a way that shapes much of the modern internet experience.',
-      ];
-    }
-
-    return [
-      `Company summary: ${company} appears to be an established company with products or services highlighted on its official website.`,
-      `Company fact 1: ${company} presents itself as an organization with a public web presence and branded offerings.`,
-    ];
-  }
-
   private async rememberWorkflowCompanyFacts(context: ComplexTaskContext, snapshot: BrowserSnapshot): Promise<void> {
     const company = this.getRememberedFactValue(context, 'Company');
     if (!company || this.hasRememberedCompanyFacts(context)) {
-      return;
-    }
-
-    if (['apple', 'google'].includes(company.toLowerCase())) {
-      const rememberedFacts = this.buildFallbackCompanyFacts(company);
-      context.workingMemory = this.mergeWorkingMemory(context.workingMemory, rememberedFacts);
-      this.recordTaskHistory(context, `REMEMBERED: ${rememberedFacts.join(' ')}`);
       return;
     }
 
@@ -930,12 +862,15 @@ class SessionManager {
     });
 
     const normalizedAnswer = this.normalizeLooseText(factAnswer.answer);
-    const rememberedFacts = normalizedAnswer.includes("couldn't answer that clearly")
-      ? this.buildFallbackCompanyFacts(company)
-      : [
-          `Company summary: ${factAnswer.answer.trim()}`,
-          ...this.extractFactSentences(factAnswer.answer).map((fact, index) => `Company fact ${index + 1}: ${fact}`),
-        ];
+    if (!normalizedAnswer) {
+      mainLogger.warn('[SessionManager] Company facts: empty answer from Gemini, skipping remembered facts');
+      return;
+    }
+
+    const rememberedFacts = [
+      `Company summary: ${factAnswer.answer.trim()}`,
+      ...this.extractFactSentences(factAnswer.answer).map((fact, index) => `Company fact ${index + 1}: ${fact}`),
+    ];
 
     context.workingMemory = this.mergeWorkingMemory(context.workingMemory, rememberedFacts);
     this.recordTaskHistory(context, `REMEMBERED: ${rememberedFacts.join(' ')}`);
@@ -1752,106 +1687,13 @@ class SessionManager {
     return null;
   }
 
-  private isLikelyActionableVoiceCommand(text: string): boolean {
-    const normalized = text.toLowerCase().replace(/[^\w\s']/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!normalized) {
-      return false;
-    }
-
-    if (this.looksLikeComplexBrowserWorkflow(text)) {
-      return true;
-    }
-
-    if (this.normalizeBrowserRescueIntent(normalized)) {
-      return true;
-    }
-
-    if (this.normalizeSummarizeIntent(normalized)) {
-      return true;
-    }
-
-    if (this.normalizeBrowserAssistiveIntent(normalized)) {
-      return true;
-    }
-
-    if (this.normalizeScreenQuestionIntent(normalized)) {
-      return true;
-    }
-
-    if (this.normalizeDescribeIntent(normalized)) {
-      return true;
-    }
-
-    if (INCOMPLETE_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized))) {
-      return false;
-    }
-
-    if (normalized.includes('cancel')) {
-      return true;
-    }
-
-    if (UNCLEAR_TRANSCRIPT_PATTERNS.some((pattern) => pattern.test(normalized))) {
-      return false;
-    }
-
-    if (this.expandSmartCommand(normalized) !== normalized) {
-      return true;
-    }
-
-    if (QUESTION_STYLE_STARTERS.some((starter) => normalized === starter || normalized.startsWith(`${starter} `))) {
-      return false;
-    }
-
-    if (COMMAND_STARTERS.some((starter) => normalized === starter || normalized.startsWith(`${starter} `))) {
-      return true;
-    }
-
-    return /\b(screen|page|browser|google|chrome|tab|button|link|lights?|fan|thermostat|temperature|site|website)\b/i.test(normalized);
-  }
-
-  private resolveVoiceInstruction(text: string): string | null {
-    const trimmed = text.trim().replace(/\s+/g, ' ');
-    if (!trimmed) {
-      return null;
-    }
-
-    if (this.looksLikeComplexBrowserWorkflow(trimmed)) {
-      return trimmed;
-    }
-
-    const normalizedSummarizeIntent = this.normalizeSummarizeIntent(trimmed);
-    if (normalizedSummarizeIntent) {
-      return normalizedSummarizeIntent;
-    }
-
-    if (this.normalizeBrowserAssistiveIntent(trimmed)) {
-      return trimmed;
-    }
-
-    const normalizedScreenQuestionIntent = this.normalizeScreenQuestionIntent(trimmed);
-    if (normalizedScreenQuestionIntent) {
-      return normalizedScreenQuestionIntent;
-    }
-
-    const normalizedDescribeIntent = this.normalizeDescribeIntent(trimmed);
-    if (normalizedDescribeIntent) {
-      return normalizedDescribeIntent;
-    }
-
-    if (!this.isLikelyActionableVoiceCommand(trimmed)) {
-      return null;
-    }
-
-    return trimmed;
-  }
-
   private isExplicitCancel(text: string): boolean {
     const normalized = text.toLowerCase().replace(/[^\w\s']/g, ' ').replace(/\s+/g, ' ').trim();
     return normalized === 'cancel' || normalized === 'stop' || normalized.includes('cancel');
   }
 
   private canUseSemanticInterpreter(): boolean {
-    return apiKeyManager.hasGeminiApiKey() || Boolean(apiKeyManager.getGeminiBackendUrl());
+    return apiKeyManager.hasGeminiApiKey();
   }
 
   private addRecentTurn(turn: RecentUserTurn): void {
@@ -2889,145 +2731,6 @@ class SessionManager {
     });
   }
 
-  private buildLegacyInterpretation(text: string): GeminiUserRequestInterpretation {
-    const trimmed = text.trim();
-    const browserAssistiveIntent = this.normalizeBrowserAssistiveIntent(trimmed);
-    const summarizeIntent = this.normalizeSummarizeIntent(trimmed);
-    const describeIntent = this.normalizeDescribeIntent(trimmed);
-    const screenQuestionIntent = this.normalizeScreenQuestionIntent(trimmed);
-    const expandedSmartCommand = this.expandSmartCommand(trimmed);
-
-    if (!trimmed) {
-      return {
-        intent: 'none',
-        confidence: 'low',
-        normalizedInstruction: null,
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    if (this.isExplicitCancel(trimmed)) {
-      return {
-        intent: 'cancel',
-        confidence: 'high',
-        normalizedInstruction: 'cancel',
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    if (this.looksLikeComplexBrowserWorkflow(trimmed)) {
-      return {
-        intent: 'browser_task',
-        confidence: 'high',
-        normalizedInstruction: trimmed,
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    if (this.normalizeBrowserRescueIntent(trimmed)) {
-      return {
-        intent: 'browser_rescue',
-        confidence: 'high',
-        normalizedInstruction: trimmed,
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    if (summarizeIntent) {
-      return {
-        intent: 'summarize_screen',
-        confidence: 'high',
-        normalizedInstruction: summarizeIntent,
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    if (describeIntent) {
-      return {
-        intent: 'describe_screen',
-        confidence: 'high',
-        normalizedInstruction: describeIntent,
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    if (screenQuestionIntent) {
-      return {
-        intent: 'screen_question',
-        confidence: 'high',
-        normalizedInstruction: screenQuestionIntent,
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    if (browserAssistiveIntent) {
-      return {
-        intent: 'browser_assistive',
-        confidence: 'high',
-        normalizedInstruction: trimmed,
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent,
-      };
-    }
-
-    if (expandedSmartCommand !== trimmed) {
-      return {
-        intent: 'smart_home',
-        confidence: 'high',
-        normalizedInstruction: trimmed,
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    if (/^(?:what can you do|help|how does this work|what do you do)\b/i.test(trimmed)) {
-      return {
-        intent: 'chat',
-        confidence: 'medium',
-        normalizedInstruction: trimmed,
-        spokenResponse: GENERIC_CHAT_RESPONSE,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    if (this.isLikelyActionableVoiceCommand(trimmed)) {
-      return {
-        intent: 'browser_task',
-        confidence: 'medium',
-        normalizedInstruction: this.resolveVoiceInstruction(trimmed) || trimmed,
-        spokenResponse: null,
-        clarificationQuestion: null,
-        browserAssistiveIntent: null,
-      };
-    }
-
-    return {
-      intent: this.pendingClarificationQuestion ? 'clarify' : 'none',
-      confidence: 'low',
-      normalizedInstruction: trimmed || null,
-      spokenResponse: null,
-      clarificationQuestion: this.pendingClarificationQuestion ? GENERIC_CLARIFICATION_RESPONSE : null,
-      browserAssistiveIntent: null,
-    };
-  }
-
   private getLastMeaningfulTurn(): RecentUserTurn | null {
     for (let index = this.recentTurns.length - 1; index >= 0; index -= 1) {
       const turn = this.recentTurns[index];
@@ -3202,7 +2905,14 @@ class SessionManager {
   ): Promise<GeminiUserRequestInterpretation> {
     const trimmed = text.trim();
     if (!trimmed) {
-      return this.buildLegacyInterpretation(trimmed);
+      return {
+        intent: 'none',
+        confidence: 'low',
+        normalizedInstruction: null,
+        spokenResponse: null,
+        clarificationQuestion: null,
+        browserAssistiveIntent: null,
+      };
     }
 
     if (this.isExplicitCancel(trimmed)) {
@@ -3217,26 +2927,28 @@ class SessionManager {
     }
 
     if (!this.canUseSemanticInterpreter()) {
-      return this.applyInterpretationGuards(trimmed, this.buildLegacyInterpretation(trimmed));
+      return {
+        intent: 'clarify',
+        confidence: 'high',
+        normalizedInstruction: null,
+        spokenResponse: null,
+        clarificationQuestion: 'Add your Gemini API key in Settings so I can understand your request.',
+        browserAssistiveIntent: null,
+      };
     }
 
     const pageInfo = await this.getCurrentPageInfo();
 
-    try {
-      const interpretation = await geminiService.interpretUserRequest({
-        transcript: trimmed,
-        source,
-        browserIsOpen: browserService.isRunning(),
-        pageUrl: pageInfo?.url,
-        pageTitle: pageInfo?.title,
-        recentTurns: this.recentTurns,
-        pendingClarificationQuestion: this.pendingClarificationQuestion,
-      });
-      return this.applyInterpretationGuards(trimmed, interpretation);
-    } catch (error) {
-      mainLogger.warn('[SessionManager] Semantic interpreter failed, falling back to legacy routing:', error);
-      return this.applyInterpretationGuards(trimmed, this.buildLegacyInterpretation(trimmed));
-    }
+    const interpretation = await geminiService.interpretUserRequest({
+      transcript: trimmed,
+      source,
+      browserIsOpen: browserService.isRunning(),
+      pageUrl: pageInfo?.url,
+      pageTitle: pageInfo?.title,
+      recentTurns: this.recentTurns,
+      pendingClarificationQuestion: this.pendingClarificationQuestion,
+    });
+    return this.applyInterpretationGuards(trimmed, interpretation);
   }
 
   private logInterpretation(text: string, interpretation: GeminiUserRequestInterpretation): void {
@@ -3908,8 +3620,8 @@ class SessionManager {
   async answerScreenQuestion(question: string, runId: number): Promise<void> {
     if (!this.isRunCurrent(runId)) return;
 
-    if (!apiKeyManager.hasGeminiApiKey() && !apiKeyManager.hasGeminiBackendUrl()) {
-      ttsService.speakImmediate('I need Gemini vision configured to answer screen questions. Add a Gemini API key or Sally Vision Backend URL in settings.');
+    if (!apiKeyManager.hasGeminiApiKey()) {
+      ttsService.speakImmediate('I need a Gemini API key to answer screen questions. Add your key in Settings.');
       if (this.isRunCurrent(runId)) {
         this.setState('idle');
       }
@@ -4081,143 +3793,22 @@ class SessionManager {
     }
   }
 
-  private buildFallbackBrowserRescueAnalysis(snapshot: BrowserSnapshot): BrowserRescueAnalysis {
-    const pageName = snapshot.pageTitle || snapshot.pageUrl || 'this page';
-    const dialogs = snapshot.pageContext.dialogs.slice(0, 2);
-    const errors = snapshot.pageContext.visibleMessages.slice(0, 3);
-    const fields = snapshot.pageContext.interactiveElements
-      .filter((element) => ['textbox', 'searchbox', 'combobox'].includes(element.role) && !element.disabled)
-      .slice(0, 3);
-    const safeButtons = snapshot.pageContext.interactiveElements
-      .filter((element) => ['button', 'tab', 'menuitem'].includes(element.role))
-      .filter((element) => {
-        const descriptor = this.normalizeLooseText(element.label || element.text || '');
-        return Boolean(descriptor) && !RISKY_ACTION_PATTERN.test(descriptor);
-      })
-      .slice(0, 4);
-    const blockers = [
-      ...dialogs.map((dialog) => ({
-        label: dialog,
-        reason: `Dialog open: ${dialog}`,
-      })),
-      ...errors.map((error) => ({
-        label: error,
-        reason: `Visible message: ${error}`,
-      })),
-    ].slice(0, 3);
-
-    const suggestions: BrowserRescueSuggestion[] = [];
-    const dismissButton = safeButtons.find((button) => {
-      const descriptor = this.normalizeLooseText(button.label || button.text || '');
-      return /\b(close|dismiss|not now|cancel|ok|continue)\b/i.test(descriptor);
-    });
-    if (dismissButton) {
-      suggestions.push({
-        label: `Close "${dismissButton.label || dismissButton.text}"`,
-        reason: 'A dialog or interrupting control appears to be blocking progress.',
-        action: {
-          type: 'click',
-          selector: dismissButton.label || dismissButton.text || 'Close',
-          targetId: dismissButton.targetId,
-          framePath: dismissButton.framePath,
-          shadowPath: dismissButton.shadowPath,
-        },
-        safeToAutoExecute: true,
-      });
-    }
-
-    if (fields.length > 0) {
-      const firstField = fields[0];
-      suggestions.push({
-        label: `Focus "${firstField.label || firstField.placeholder || firstField.text || 'the next field'}"`,
-        reason: 'The next likely step is entering information into a visible field.',
-        action: {
-          type: 'focus',
-          selector: firstField.label || firstField.placeholder || firstField.text || 'field',
-          targetId: firstField.targetId,
-          framePath: firstField.framePath,
-          shadowPath: firstField.shadowPath,
-        },
-        safeToAutoExecute: true,
-      });
-    }
-
-    if (suggestions.length === 0 && safeButtons.length > 0) {
-      const firstButton = safeButtons[0];
-      suggestions.push({
-        label: `Use "${firstButton.label || firstButton.text || 'the next button'}"`,
-        reason: 'This looks like the next visible control that can move the workflow forward.',
-        action: {
-          type: 'click',
-          selector: firstButton.label || firstButton.text || 'button',
-          targetId: firstButton.targetId,
-          framePath: firstButton.framePath,
-          shadowPath: firstButton.shadowPath,
-        },
-        safeToAutoExecute: true,
-      });
-    }
-
-    return {
-      pageSummary: snapshot.pageContext.semanticSummary || `I can see ${pageName}.`,
-      blockers,
-      suggestions,
-    };
-  }
-
   private async analyzeBrowserRescue(
     snapshot: BrowserSnapshot,
     context: ComplexTaskContext | null,
   ): Promise<BrowserRescueAnalysis> {
-    const rescueAnalyzer = (geminiService as typeof geminiService & {
-      analyzeBrowserRescue?: (params: {
-        screenshot: string;
-        pageUrl?: string;
-        pageTitle?: string;
-        pageContext?: BrowserSnapshot['pageContext'];
-        sourceMode?: BrowserSnapshot['sourceMode'];
-        tabs?: BrowserSnapshot['tabs'];
-        activeTabId?: string | null;
-        overallGoal?: string | null;
-        failureContext?: string | null;
-        history?: string[];
-      }) => Promise<BrowserRescueAnalysis>;
-    }).analyzeBrowserRescue?.bind(geminiService);
-
-    if (!rescueAnalyzer) {
-      return this.buildFallbackBrowserRescueAnalysis(snapshot);
-    }
-
-    try {
-      const analysis = await rescueAnalyzer({
-        screenshot: snapshot.screenshot,
-        pageUrl: snapshot.pageUrl,
-        pageTitle: snapshot.pageTitle,
-        pageContext: snapshot.pageContext,
-        sourceMode: snapshot.sourceMode,
-        tabs: snapshot.tabs,
-        activeTabId: snapshot.activeTabId,
-        overallGoal: context?.goal || null,
-        failureContext: context?.lastFailure || null,
-        history: context?.history || [],
-      });
-
-      const fallback = this.buildFallbackBrowserRescueAnalysis(snapshot);
-      if (!analysis?.pageSummary) {
-        return this.buildFallbackBrowserRescueAnalysis(snapshot);
-      }
-
-      const hasExecutableSuggestion = analysis.suggestions.some((suggestion) => Boolean(suggestion.action));
-
-      return {
-        pageSummary: analysis.pageSummary || fallback.pageSummary,
-        blockers: analysis.blockers.length > 0 ? analysis.blockers : fallback.blockers,
-        suggestions: hasExecutableSuggestion ? analysis.suggestions : fallback.suggestions,
-      };
-    } catch (error) {
-      mainLogger.warn('[SessionManager] Rescue analysis failed, using fallback:', error);
-      return this.buildFallbackBrowserRescueAnalysis(snapshot);
-    }
+    return geminiService.analyzeBrowserRescue({
+      screenshot: snapshot.screenshot,
+      pageUrl: snapshot.pageUrl,
+      pageTitle: snapshot.pageTitle,
+      pageContext: snapshot.pageContext,
+      sourceMode: snapshot.sourceMode,
+      tabs: snapshot.tabs,
+      activeTabId: snapshot.activeTabId,
+      overallGoal: context?.goal || null,
+      failureContext: context?.lastFailure || null,
+      history: context?.history || [],
+    });
   }
 
   private buildBrowserRescueNarration(analysis: BrowserRescueAnalysis, autoSuggestion: BrowserRescueSuggestion | null): string {
@@ -4257,7 +3848,7 @@ class SessionManager {
       lines.push(nextStep);
     }
 
-    return lines.slice(0, 3).join('\n') || 'I can inspect this page and help with the next step.';
+    return lines.slice(0, 3).join('\n') || analysis.pageSummary.trim();
   }
 
   private async handleBrowserRescue(runId: number, trigger: 'manual' | 'automatic'): Promise<boolean> {
@@ -4282,7 +3873,20 @@ class SessionManager {
       return false;
     }
 
-    const analysis = await this.analyzeBrowserRescue(snapshot, this.currentTask);
+    let analysis: BrowserRescueAnalysis;
+    try {
+      analysis = await this.analyzeBrowserRescue(snapshot, this.currentTask);
+    } catch (error) {
+      mainLogger.error('[SessionManager] Browser rescue analysis failed:', error);
+      const spoken = 'Sorry, I could not analyze this page with Gemini. Check your API key and try again.';
+      this.broadcastChat('assistant', spoken);
+      await ttsService.speakImmediate(spoken);
+      if (this.isRunCurrent(runId)) {
+        this.setState('idle');
+      }
+      return false;
+    }
+
     const autoSuggestion = analysis.suggestions.find((suggestion) => (
       suggestion.safeToAutoExecute
       && suggestion.action
@@ -4419,9 +4023,9 @@ class SessionManager {
 
     if (!this.isRunCurrent(runId)) return;
 
-    if (!apiKeyManager.hasGeminiApiKey() && !apiKeyManager.hasGeminiBackendUrl()) {
+    if (!apiKeyManager.hasGeminiApiKey()) {
       if (!this.isRunCurrent(runId)) return;
-      ttsService.speakImmediate("I need Gemini vision configured to browse. Add a Gemini API key or Sally Vision Backend URL in settings.");
+      ttsService.speakImmediate('I need a Gemini API key to browse. Add your key in Settings.');
       if (this.isRunCurrent(runId)) {
         this.setState('idle');
       }
@@ -4447,7 +4051,7 @@ class SessionManager {
       }
       await this.syncOverlayTargetFromBrowser(runId);
 
-      for (let i = 0; i < MAX_ITERATIONS; i++) {
+      for (let i = 0; i < AGENT_LOOP.maxIterations; i++) {
         // Check cancellation
         if (!this.isRunCurrent(runId)) {
           mainLogger.info('[SessionManager] Agentic loop cancelled at iteration', i);
@@ -4455,7 +4059,7 @@ class SessionManager {
         }
 
         // Check timeout
-        if (Date.now() - startTime > MAX_DURATION_MS) {
+        if (Date.now() - startTime > AGENT_LOOP.maxDurationMs) {
           mainLogger.info('[SessionManager] Agentic loop timed out');
           cloudLog('WARNING', 'task_failed', {
             runId,
@@ -4468,7 +4072,7 @@ class SessionManager {
           break;
         }
 
-        mainLogger.info(`[SessionManager] Agentic loop iteration ${i + 1}/${MAX_ITERATIONS}`);
+        mainLogger.info(`[SessionManager] Agentic loop iteration ${i + 1}/${AGENT_LOOP.maxIterations}`);
         await this.syncOverlayTargetFromBrowser(runId);
         if (!this.isRunCurrent(runId)) return;
 
@@ -4582,9 +4186,9 @@ class SessionManager {
   ): Promise<void> {
     if (!this.isRunCurrent(runId)) return;
 
-    if (!apiKeyManager.hasGeminiApiKey() && !apiKeyManager.hasGeminiBackendUrl()) {
+    if (!apiKeyManager.hasGeminiApiKey()) {
       if (!this.isRunCurrent(runId)) return;
-      ttsService.speakImmediate("I need Gemini vision configured to browse. Add a Gemini API key or Sally Vision Backend URL in settings.");
+      ttsService.speakImmediate('I need a Gemini API key to browse. Add your key in Settings.');
       if (this.isRunCurrent(runId)) {
         this.setState('idle');
       }
@@ -4623,12 +4227,12 @@ class SessionManager {
         return;
       }
 
-      for (let i = 0; i < MAX_ITERATIONS; i++) {
+      for (let i = 0; i < AGENT_LOOP.maxIterations; i++) {
         if (!this.isRunCurrent(runId)) {
           return;
         }
 
-        if (Date.now() - context.startTime > MAX_DURATION_MS) {
+        if (Date.now() - context.startTime > AGENT_LOOP.maxDurationMs) {
           context.status = 'failed';
           cloudLog('WARNING', 'task_failed', {
             runId,
@@ -4644,7 +4248,7 @@ class SessionManager {
           break;
         }
 
-        mainLogger.info(`[SessionManager] Planned loop iteration ${i + 1}/${MAX_ITERATIONS}`, {
+        mainLogger.info(`[SessionManager] Planned loop iteration ${i + 1}/${AGENT_LOOP.maxIterations}`, {
           goal: context.goal,
           subtask: context.activeSubtask,
           planSummary: context.planSummary,
@@ -4966,6 +4570,18 @@ class SessionManager {
     }
   }
 
+  /** Stop in-flight work and audio without user-facing TTS (app shutdown). */
+  prepareQuit(): void {
+    this.invalidateRun();
+    this.clearPendingClarification();
+    this.clearPendingRiskyAction();
+    this.clearPendingGuidedEmailPrompt();
+    this.currentTask = null;
+    this.sessionWorkingMemory = [];
+    ttsService.stop();
+    this.state = 'idle';
+  }
+
   async cancel(): Promise<void> {
     const cancelledRunId = this.runGeneration;
     this.invalidateRun();
@@ -4987,6 +4603,9 @@ class SessionManager {
   }
 
   setState(state: SallyState): void {
+    if (state === 'idle' || state === 'listening') {
+      this.stateBeforeSpeech = null;
+    }
     this.state = state;
     if (state === 'idle') {
       windowManager.hideWaitingOverlay();
@@ -4999,6 +4618,15 @@ class SessionManager {
         windowManager.hideWaitingOverlay();
         windowManager.showBorderOverlay();
       }
+    }
+    // Hold the macOS display awake whenever Sally is mid-task. Without this
+    // a long agentic loop can be interrupted by the screen dimming, which
+    // blocks `desktopCapturer` and breaks the user's mental model of "the
+    // agent is still working".
+    if (state === 'acting' || state === 'speaking' || state === 'awaiting_response') {
+      engagePowerGuard();
+    } else {
+      releasePowerGuard();
     }
     windowManager.broadcastToAll('sally:state-changed', { state });
   }
