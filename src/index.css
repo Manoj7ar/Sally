@@ -16,13 +16,25 @@
     --text-primary: #ECECF0;
     --text-secondary: #8a8a96;
     --border-light: #2a3a5c;
-    color-scheme: dark;
+    /* Native macOS system font stack so Sally inherits SF Pro / SF Compact
+       with correct optical sizing and matches the rest of the OS. */
+    --sally-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+      "SF Pro Display", "Helvetica Neue", "Inter", system-ui, sans-serif;
+    color-scheme: light dark;
+  }
+
+  html, body, button, input, textarea, select {
+    font-family: var(--sally-font-sans);
   }
 
   body {
     @apply antialiased;
     background-color: var(--app-background);
     color: var(--text-primary);
+    /* macOS-quality glyph rendering. */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 }
 
