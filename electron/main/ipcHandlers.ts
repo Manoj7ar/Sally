@@ -1,27 +1,32 @@
 // IPC handlers for Sally
-import { ipcMain, shell } from 'electron';
+import { app, ipcMain, shell, systemPreferences } from 'electron';
+import { hotkeyManager } from './hotkeyManager.js';
 import { apiKeyManager } from './managers/apiKeyManager.js';
 import { microphoneManager } from './managers/microphoneManager.js';
 import { sessionManager } from './managers/sessionManager.js';
+import { macPermissionsManager } from './managers/macPermissionsManager.js';
 import { browserService } from './services/browserService.js';
 import { windowManager } from './windowManager.js';
 import { store, STORE_KEYS } from './utils/store.js';
 import { mainLogger } from './utils/logger.js';
-import type { BrowserActionRequest } from '../../shared/types.js';
+import type { BrowserActionRequest, MacPermissionPane } from '../../shared/types.js';
 
 export function registerIpcHandlers(): void {
   // ── Config ──
 
   ipcMain.handle('sally:get-config', () => {
+    const accessibilityTrusted =
+      process.platform === 'darwin' ? systemPreferences.isTrustedAccessibilityClient(false) : false;
     return {
       provider: apiKeyManager.getProvider(),
       hasProviderKey: apiKeyManager.hasApiKey(),
       hasElevenLabsKey: apiKeyManager.hasElevenLabsKey(),
       hasGeminiKey: apiKeyManager.hasGeminiApiKey(),
-      geminiBackendUrl: apiKeyManager.getGeminiBackendUrl(),
       autoResearchScreenQuestions: apiKeyManager.getAutoResearchScreenQuestions(),
-      cloudLoggingEnabled: apiKeyManager.getCloudLoggingEnabled(),
       audioDevice: store.get(STORE_KEYS.AUDIO_DEVICE) || 'default',
+      openAtLogin: apiKeyManager.getOpenAtLogin(),
+      accessibilityTrusted,
+      pushToTalkHotkeyActive: hotkeyManager.isRegistered(),
     };
   });
 
@@ -61,14 +66,6 @@ export function registerIpcHandlers(): void {
     return apiKeyManager.hasGeminiApiKey();
   });
 
-  ipcMain.handle('sally:set-gemini-backend-url', (_e, url: string) => {
-    apiKeyManager.setGeminiBackendUrl(url);
-  });
-
-  ipcMain.handle('sally:get-gemini-backend-url', () => {
-    return apiKeyManager.getGeminiBackendUrl();
-  });
-
   ipcMain.handle('sally:set-auto-research-screen-questions', (_e, enabled: boolean) => {
     apiKeyManager.setAutoResearchScreenQuestions(enabled);
   });
@@ -77,12 +74,47 @@ export function registerIpcHandlers(): void {
     return apiKeyManager.getAutoResearchScreenQuestions();
   });
 
-  ipcMain.handle('sally:set-cloud-logging-enabled', (_e, enabled: boolean) => {
-    apiKeyManager.setCloudLoggingEnabled(enabled);
+  ipcMain.handle('sally:set-open-at-login', (_e, enabled: boolean) => {
+    apiKeyManager.setOpenAtLogin(enabled);
+    app.setLoginItemSettings({ openAtLogin: enabled });
   });
 
-  ipcMain.handle('sally:get-cloud-logging-enabled', () => {
-    return apiKeyManager.getCloudLoggingEnabled();
+  // ── Push-to-talk shortcut ──
+
+  ipcMain.handle('sally:get-hotkey', () => {
+    return hotkeyManager.getBinding();
+  });
+
+  ipcMain.handle('sally:start-hotkey-capture', () => {
+    return hotkeyManager.startCapture();
+  });
+
+  ipcMain.handle('sally:cancel-hotkey-capture', () => {
+    return hotkeyManager.cancelCapture();
+  });
+
+  ipcMain.handle('sally:reset-hotkey', () => {
+    const binding = hotkeyManager.resetBindingToDefault();
+    windowManager.broadcastToAll('sally:hotkey-changed', binding);
+    return binding;
+  });
+
+  // ── macOS Permissions ──
+
+  ipcMain.handle('permissions:get-status', () => {
+    return macPermissionsManager.getStatus();
+  });
+
+  ipcMain.handle('permissions:request-microphone', async () => {
+    return macPermissionsManager.requestMicrophone();
+  });
+
+  ipcMain.handle('permissions:prompt-accessibility', () => {
+    return macPermissionsManager.promptAccessibility();
+  });
+
+  ipcMain.handle('permissions:open-pane', (_e, data: { pane: MacPermissionPane }) => {
+    macPermissionsManager.openSystemSettings(data.pane);
   });
 
   // ── Audio ──
