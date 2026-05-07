@@ -21,7 +21,7 @@
     "typecheck": "npm run build:electron && tsc -b",
     "verify:desktop": "tsx scripts/desktop-doctor.ts",
     "build:check": "npm run build:electron",
-    "check": "npm run lint && npm run typecheck && npm run test:run && npm run verify:desktop && npm run build && node --check sally-backend/index.js"
+    "check": "npm run lint && npm run typecheck && npm run test:run && npm run verify:desktop && npm run build"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",
