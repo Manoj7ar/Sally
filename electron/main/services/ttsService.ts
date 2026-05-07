@@ -8,6 +8,12 @@ import { mainLogger } from '../utils/logger.js';
 
 const PLAYBACK_TIMEOUT_MS = 30_000;
 
+/** Fired around renderer-backed playback waits (successful synthesis + IPC handoff only). */
+export interface TtsPlaybackLifecycle {
+  onBegun?: () => void;
+  onEnded?: () => void;
+}
+
 let nextId = 0;
 
 class TtsService {
@@ -16,6 +22,8 @@ class TtsService {
   private stopped = false;
   private pendingResolve: (() => void) | null = null;
   private pendingId: string | null = null;
+  private playbackWaitDepth = 0;
+  private lifecycle: TtsPlaybackLifecycle | null = null;
 
   constructor() {
     ipcMain.on('sally:tts-playback-complete', (_event, data: { id: string }) => {
@@ -30,6 +38,10 @@ class TtsService {
       if (!data?.id) return;
       mainLogger.error('[TTS] Renderer playback error for', data.id, '-', data.message);
     });
+  }
+
+  setPlaybackLifecycle(lifecycle: TtsPlaybackLifecycle | null): void {
+    this.lifecycle = lifecycle;
   }
 
   async speak(text: string): Promise<void> {
@@ -56,6 +68,20 @@ class TtsService {
 
   isSpeaking(): boolean {
     return this.isPlaying;
+  }
+
+  private enterPlaybackWait(): void {
+    this.playbackWaitDepth += 1;
+    if (this.playbackWaitDepth === 1) {
+      this.lifecycle?.onBegun?.();
+    }
+  }
+
+  private leavePlaybackWait(): void {
+    this.playbackWaitDepth = Math.max(0, this.playbackWaitDepth - 1);
+    if (this.playbackWaitDepth === 0) {
+      this.lifecycle?.onEnded?.();
+    }
   }
 
   private stopCurrentPlayback(): void {
@@ -131,29 +157,34 @@ class TtsService {
       const audioBase64 = audioBuffer.toString('base64');
       const id = `tts-${++nextId}`;
 
-      // Send audio to the Sally bar renderer for playback and wait for completion.
-      await new Promise<void>((resolve) => {
-        this.pendingResolve = resolve;
-        this.pendingId = id;
-        void this.sendAudioToSallyBar({ audioBase64, id }).catch((error) => {
-          mainLogger.error('[TTS] Failed to deliver audio to Sally bar:', error);
-          if (this.pendingId === id && this.pendingResolve) {
-            this.pendingResolve();
-            this.pendingResolve = null;
-            this.pendingId = null;
-          }
-        });
+      this.enterPlaybackWait();
+      try {
+        // Send audio to the Sally bar renderer for playback and wait for completion.
+        await new Promise<void>((resolve) => {
+          this.pendingResolve = resolve;
+          this.pendingId = id;
+          void this.sendAudioToSallyBar({ audioBase64, id }).catch((error) => {
+            mainLogger.error('[TTS] Failed to deliver audio to Sally bar:', error);
+            if (this.pendingId === id && this.pendingResolve) {
+              this.pendingResolve();
+              this.pendingResolve = null;
+              this.pendingId = null;
+            }
+          });
 
-        // Safety timeout in case renderer never responds
-        setTimeout(() => {
-          if (this.pendingId === id && this.pendingResolve) {
-            mainLogger.warn('[TTS] Playback completion timeout for', id);
-            this.pendingResolve();
-            this.pendingResolve = null;
-            this.pendingId = null;
-          }
-        }, PLAYBACK_TIMEOUT_MS);
-      });
+          // Safety timeout in case renderer never responds
+          setTimeout(() => {
+            if (this.pendingId === id && this.pendingResolve) {
+              mainLogger.warn('[TTS] Playback completion timeout for', id);
+              this.pendingResolve();
+              this.pendingResolve = null;
+              this.pendingId = null;
+            }
+          }, PLAYBACK_TIMEOUT_MS);
+        });
+      } finally {
+        this.leavePlaybackWait();
+      }
       cloudLog('INFO', 'tts_request', {
         textLength: text.length,
         latencyMs: Date.now() - startedAt,
