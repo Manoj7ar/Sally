@@ -63,16 +63,19 @@
       "dist-electron/**/*"
     ],
     "mac": {
-      "target": "dmg",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
       "category": "public.app-category.utilities",
+      "minimumSystemVersion": "11.0",
       "entitlements": "config/macos/entitlements.mac.plist",
       "entitlementsInherit": "config/macos/entitlements.mac.plist"
-    },
-    "win": {
-      "target": "nsis"
-    },
-    "linux": {
-      "target": "AppImage"
     }
   }
 }
