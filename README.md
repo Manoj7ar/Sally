@@ -188,3 +188,116 @@ If you're using an AI coding IDE or agent, you can give it the prompt below afte
 npm run check
 ```
 
+## Reproducible Testing Instructions
+
+Follow these steps to verify Sally works end-to-end on your machine.
+
+### Prerequisites
+
+| Requirement | Details |
+|---|---|
+| **Node.js** | v20+ ([download](https://nodejs.org/)) |
+| **Gemini API Key** | Free from [Google AI Studio](https://aistudio.google.com/apikey) |
+| **ElevenLabs API Key** | Free tier from [elevenlabs.io](https://elevenlabs.io/) |
+| **Microphone** | Any working mic for voice input |
+| **OS** | **macOS 11+** (required) |
+
+Use Node.js 20+. No separate external Chrome or Playwright prerequisite is required for the Sally browser path.
+
+### Setup (< 3 minutes)
+
+```bash
+# 1. Clone and install
+git clone https://github.com/manoj7ar/sally.git
+cd sally
+npm install
+npm run verify:desktop
+
+# 2. Start the app
+npm run dev
+
+# 3. In the Settings window, add:
+# - Gemini API Key
+# - ElevenLabs API Key
+```
+
+### Test Scenarios
+
+Run these in order to verify all features work:
+
+**Test 1 — Screen Description (Gemini Vision)**
+```
+Hold Right Option → say "What am I looking at?" → release
+Expected: Sally describes what's currently on your screen
+Verifies: Gemini multimodal vision, STT, TTS
+```
+
+**Test 2 — Navigation (Sally Browser)**
+```
+Hold Right Option → say "Go to Gmail" → release
+Expected: Sally browser opens and navigates directly to Gmail or the most relevant Gmail destination
+Verifies: Electron browser runtime, navigation resolution, agentic loop
+```
+
+**Test 3 — Multi-step Task (Agentic Loop)**
+```
+Hold Right Option → say "Search for accessibility tools on Google" → release
+Expected: Sally opens search, fills the query, presses Enter, and describes results
+Verifies: Multi-step agentic loop with memory, page-context grounding, DOM-first actions
+```
+
+**Test 4 — Browser Assistive Help**
+```
+With a page open in Sally browser: Hold Right Option → say "What can I do here?" → release
+Expected: Sally describes visible controls or actions on the current page
+Verifies: DOM/page-context extraction, assistive path
+```
+
+**Test 5 — Screen Question**
+```
+Hold Right Option → say "How many people are on this page?" → release
+Expected: Sally answers from the visible screenshot
+Verifies: visual Q&A route, Gemini screenshot understanding
+```
+
+**Test 6 — Cancel**
+```
+During any active task: Hold Right Option → say "Cancel" → release
+Expected: Sally stops immediately and says "Cancelled."
+Verifies: Mid-task cancellation
+```
+
+**Test 7 — Text Input (Composer)**
+```
+Click the keyboard icon on the Sally bar → type a command → press Enter
+Expected: Same behavior as voice, but via typed text
+Verifies: Text-based instruction path
+```
+
+### Expected Behavior
+
+- Sally Bar appears at the top of the screen (draggable floating pill)
+- Blue border overlay appears when Sally is actively working
+- When Sally is waiting for a reply, the browser blurs fully and shows a centered `Agent is waiting for your reply` message with an `End Agent` cancel button
+- Every action is narrated aloud via TTS
+- The Sally browser keeps its own cookies and sessions across restarts
+- Screen-only commands do not open the browser
+- The agentic loop stops after **40** iterations or **10 minutes** per task (`AGENT_LOOP` in `electron/main/utils/constants.ts`)
+
+### Troubleshooting
+
+| Issue | Solution |
+|---|---|
+| "require is not defined" | Run `npm run build:electron` before `npm run dev` |
+| Browser task starts in the wrong place | Retry with a clearer command like `go to Gmail` or `open Canva` |
+| No audio / TTS silent | Check ElevenLabs key in Settings, verify speakers are on |
+| "Gemini API key" error | Add a key in Settings > AI Model > Gemini API Key |
+| Hotkey not working | Open Settings → **macOS Permissions** card → click **Grant** next to *Accessibility*. The hotkey re-registers automatically as soon as macOS reports access; no restart required. |
+| "What do I see?" returns nothing | Open Settings → **macOS Permissions** card → click **Open Settings** next to *Screen Recording* and enable Sally. macOS forces a relaunch the first time. |
+| Microphone not heard | Open Settings → **macOS Permissions** card → click **Grant** next to *Microphone*. macOS' permission prompt appears the first time; subsequent denials require opening *System Settings → Privacy & Security → Microphone*. |
+| Sally bar is hidden behind another app | Press `Cmd+Shift+Space` to summon the floating bar back to the front from anywhere. |
+
+Settings note: the current desktop UI surfaces a top-of-screen **macOS Permissions** card listing Microphone, Screen Recording, and Accessibility (with deep-links to System Settings), an **Open Sally at login** toggle, the Gemini key under `AI Model`, ElevenLabs + Gemini STT status under `Voice`, and an auto-research toggle for Screen Questions.
+
+For a full repo health check, run `npm run check`.
+
