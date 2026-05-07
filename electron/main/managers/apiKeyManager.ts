@@ -51,17 +51,6 @@ export class ApiKeyManager {
     this.storage.set(STORE_KEYS.GEMINI_API_KEY, '');
   }
 
-  // ============ GEMINI BACKEND URL ============
-
-  setGeminiBackendUrl(url: string): void {
-    this.storage.set(STORE_KEYS.GEMINI_BACKEND_URL, url);
-  }
-
-  getGeminiBackendUrl(): string {
-    const value = this.storage.get(STORE_KEYS.GEMINI_BACKEND_URL);
-    return typeof value === 'string' ? value : '';
-  }
-
   // ============ SCREEN QUESTION AUTO RESEARCH ============
 
   setAutoResearchScreenQuestions(enabled: boolean): void {
@@ -73,15 +62,15 @@ export class ApiKeyManager {
     return typeof value === 'boolean' ? value : false;
   }
 
-  // ============ CLOUD LOGGING ============ 
+  // ============ OPEN AT LOGIN ============
 
-  setCloudLoggingEnabled(enabled: boolean): void {
-    this.storage.set(STORE_KEYS.CLOUD_LOGGING_ENABLED, enabled);
+  setOpenAtLogin(enabled: boolean): void {
+    this.storage.set(STORE_KEYS.OPEN_AT_LOGIN, enabled);
   }
 
-  getCloudLoggingEnabled(): boolean {
-    const value = this.storage.get(STORE_KEYS.CLOUD_LOGGING_ENABLED);
-    return typeof value === 'boolean' ? value : true;
+  getOpenAtLogin(): boolean {
+    const value = this.storage.get(STORE_KEYS.OPEN_AT_LOGIN);
+    return typeof value === 'boolean' ? value : false;
   }
 
   // ============ GENERIC KEY METHODS (delegate by current provider) ============
@@ -135,9 +124,6 @@ export class ApiKeyManager {
     }
   }
 
-  hasGeminiBackendUrl(): boolean {
-    return this.getGeminiBackendUrl().trim().length > 0;
-  }
 }
 
 export const apiKeyManager = new ApiKeyManager();
