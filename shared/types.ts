@@ -51,11 +51,37 @@ export interface SallyConfig {
   hasProviderKey: boolean;
   hasElevenLabsKey: boolean;
   hasGeminiKey: boolean;
-  geminiBackendUrl: string;
   autoResearchScreenQuestions: boolean;
-  cloudLoggingEnabled: boolean;
   audioDevice: string;
+  openAtLogin: boolean;
+  /** macOS: Accessibility permission allows global hotkeys (uiohook). */
+  accessibilityTrusted: boolean;
+  /** True when uIOhook successfully started for push-to-talk. */
+  pushToTalkHotkeyActive: boolean;
 }
+
+/**
+ * macOS-only permissions that Sally needs to function.
+ *   - `microphone`     drives push-to-talk transcription via getUserMedia.
+ *   - `screen`         is required for desktopCapturer screenshots used by
+ *                      the "what do I see?" Gemini Vision flow.
+ *   - `accessibility`  is required for global push-to-talk via uiohook-napi.
+ */
+export type MacPermissionState =
+  | 'granted'
+  | 'denied'
+  | 'restricted'
+  | 'not-determined'
+  | 'unknown';
+
+export interface MacPermissionsStatus {
+  microphone: MacPermissionState;
+  screen: MacPermissionState;
+  accessibility: MacPermissionState;
+  pushToTalkHotkeyActive: boolean;
+}
+
+export type MacPermissionPane = 'microphone' | 'screen' | 'accessibility';
 
 export interface AudioDeviceInfo {
   deviceId: string;
@@ -154,14 +180,17 @@ export interface IpcChannels {
   'sally:get-elevenlabs-key-status': { request: void; response: boolean; broadcast: never };
   'sally:set-gemini-key': { request: string; response: void; broadcast: never };
   'sally:get-gemini-key-status': { request: void; response: boolean; broadcast: never };
-  'sally:set-gemini-backend-url': { request: string; response: void; broadcast: never };
-  'sally:get-gemini-backend-url': { request: void; response: string; broadcast: never };
   'sally:set-auto-research-screen-questions': { request: boolean; response: void; broadcast: never };
   'sally:get-auto-research-screen-questions': { request: void; response: boolean; broadcast: never };
-  'sally:set-cloud-logging-enabled': { request: boolean; response: void; broadcast: never };
-  'sally:get-cloud-logging-enabled': { request: void; response: boolean; broadcast: never };
   'sally:set-audio-device': { request: string; response: void; broadcast: never };
   'sally:get-audio-device': { request: void; response: string; broadcast: never };
+  'sally:set-open-at-login': { request: boolean; response: void; broadcast: never };
+
+  // macOS permissions
+  'permissions:get-status': { request: void; response: MacPermissionsStatus; broadcast: never };
+  'permissions:request-microphone': { request: void; response: MacPermissionState; broadcast: never };
+  'permissions:prompt-accessibility': { request: void; response: MacPermissionState; broadcast: never };
+  'permissions:open-pane': { request: { pane: MacPermissionPane }; response: void; broadcast: never };
 
   // Voice flow
   'sally:transcribe': { request: { audioBase64: string; mimeType: string; durationMs?: number }; response: string; broadcast: never };
@@ -208,6 +237,7 @@ export interface IpcChannels {
   'sally:tts-playback-error': { request: { id: string; message: string }; response: never; broadcast: never };
   'sally:mic-muted-changed': { request: never; response: never; broadcast: { muted: boolean } };
   'browser:state-changed': { request: never; response: never; broadcast: BrowserUiState };
+  'permissions:status-changed': { request: never; response: never; broadcast: MacPermissionsStatus };
 
   // Hotkey events (main -> sally bar)
   'hotkey:start-recording': { request: never; response: never; broadcast: void };
@@ -230,6 +260,7 @@ declare global {
       once(channel: string, callback: (event: unknown, data: unknown) => void): void;
       removeAllListeners(channel: string): void;
       platform: NodeJS.Platform;
+      pushToTalkKeyLabel: string;
     };
   }
 }
