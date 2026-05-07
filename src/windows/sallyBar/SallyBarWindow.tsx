@@ -1,0 +1,1175 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { ipc } from '../../lib/ipc';
+import { getPushToTalkKeyLabel } from '../../lib/desktopMeta';
+import { rendererLogger } from '../../lib/logger';
+import { THEME } from '../../theme/tokens';
+import WaveformView from './components/WaveformView';
+import type { AutoConfirmationListenPayload, SallyBarLayout, SallyState } from '../../../shared/types';
+import logoSrc from '../../../assets/branding/sally-logo.png';
+
+const SendIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+    <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const CloseIcon = () => (
+  <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+    <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const KeyboardIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+    <rect x="3" y="6" width="18" height="12" rx="3" stroke="currentColor" strokeWidth="1.8" />
+    <path d="M7 10H7.01M10 10H10.01M13 10H13.01M16 10H16.01M7 13H13M15.5 13H17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+function MicIcon({ muted }: { muted: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+      <path d="M12 4a3 3 0 0 1 3 3v4a3 3 0 0 1-6 0V7a3 3 0 0 1 3-3Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M19 11a7 7 0 0 1-12.06 4.94A7 7 0 0 1 5 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 18v3M8.5 21h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      {muted && <path d="M5 5l14 14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />}
+    </svg>
+  );
+}
+
+const stateColors: Record<SallyState, string> = {
+  idle: THEME.status.idle,
+  listening: THEME.status.success,
+  processing: THEME.status.warningBright,
+  acting: THEME.accent.primary,
+  speaking: THEME.status.speaking,
+  awaiting_response: THEME.status.awaiting,
+};
+
+const stateLabels: Record<Exclude<SallyState, 'idle'>, string> = {
+  listening: '',
+  processing: 'Transcribing...',
+  acting: 'Working...',
+  speaking: 'Speaking...',
+  awaiting_response: 'Reply needed',
+};
+
+const ACCENT = THEME.accent.primary;
+const PILL_BG = THEME.glass.strong;
+const PILL_BLUR = 'blur(28px) saturate(140%)';
+const PILL_BORDER = `1px solid ${THEME.glass.border}`;
+const COMPOSER_BG = THEME.glass.medium;
+const COMPOSER_BORDER = `1px solid ${THEME.glass.border}`;
+const COMPOSER_WIDTH = 360;
+const PILL_WIDTH = 280;
+const TRANSCRIPT_WIDTH = 360;
+const LIVE_PREVIEW_INTERVAL_MS = 1000;
+const MIN_LIVE_PREVIEW_BYTES = 6000;
+const MIN_LIVE_PREVIEW_DURATION_MS = 1500;
+const SILENCE_GUARD_MIN_DURATION_MS = 500;
+const SILENCE_GUARD_MAX_PEAK_LEVEL = 0.015;
+const SILENCE_GUARD_MAX_AVERAGE_LEVEL = 0.006;
+const CONFIRMATION_ACTIVE_LEVEL = 0.018;
+const DEFAULT_CONFIRMATION_MAX_DURATION_MS = 4000;
+const DEFAULT_CONFIRMATION_TRAILING_SILENCE_MS = 700;
+const AUDIO_BITS_PER_SECOND = 128000;
+const VOICE_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: { ideal: true },
+  noiseSuppression: { ideal: true },
+  autoGainControl: { ideal: true },
+  channelCount: { ideal: 1 },
+  sampleRate: { ideal: 48000 },
+  sampleSize: { ideal: 16 },
+};
+
+export default function SallyBarWindow() {
+  const [pushToTalkKeyLabel, setPushToTalkKeyLabel] = useState<string>(getPushToTalkKeyLabel());
+  const [state, setState] = useState<SallyState>('idle');
+  const [inputText, setInputText] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [isComposerOpen, setIsComposerOpen] = useState(false);
+  const [isMicMuted, setIsMicMuted] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState('');
+  const [statusTranscript, setStatusTranscript] = useState('');
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const livePreviewIntervalRef = useRef<number | null>(null);
+  const livePreviewRequestInFlightRef = useRef(false);
+  const livePreviewSessionRef = useRef(0);
+  const recordingStartedAtRef = useRef(0);
+  const peakSignalLevelRef = useRef(0);
+  const signalLevelTotalRef = useRef(0);
+  const signalLevelSamplesRef = useRef(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
+  const isMicMutedRef = useRef(false);
+  const recordingModeRef = useRef<'hotkey' | 'confirmation' | null>(null);
+  const currentSignalLevelRef = useRef(0);
+  const confirmationMaxDurationTimeoutRef = useRef<number | null>(null);
+  const confirmationTrailingSilenceMsRef = useRef(DEFAULT_CONFIRMATION_TRAILING_SILENCE_MS);
+  const confirmationSpeechDetectedRef = useRef(false);
+  const confirmationSilenceStartedAtRef = useRef<number | null>(null);
+  const confirmationStopRequestedRef = useRef(false);
+  const stopRecordingRef = useRef<(() => Promise<void>) | null>(null);
+
+  const syncLayout = useCallback(async (layout: SallyBarLayout) => {
+    await ipc.invoke('window:set-pill-layout', { layout });
+  }, []);
+
+  const resetSignalLevels = useCallback(() => {
+    peakSignalLevelRef.current = 0;
+    signalLevelTotalRef.current = 0;
+    signalLevelSamplesRef.current = 0;
+    currentSignalLevelRef.current = 0;
+    setAudioLevel(0);
+  }, []);
+
+  const clearConfirmationCaptureState = useCallback(() => {
+    if (confirmationMaxDurationTimeoutRef.current !== null) {
+      window.clearTimeout(confirmationMaxDurationTimeoutRef.current);
+      confirmationMaxDurationTimeoutRef.current = null;
+    }
+    confirmationTrailingSilenceMsRef.current = DEFAULT_CONFIRMATION_TRAILING_SILENCE_MS;
+    confirmationSpeechDetectedRef.current = false;
+    confirmationSilenceStartedAtRef.current = null;
+    confirmationStopRequestedRef.current = false;
+  }, []);
+
+  const getSignalLevels = useCallback(() => {
+    const sampleCount = signalLevelSamplesRef.current;
+    const averageLevel = sampleCount > 0 ? signalLevelTotalRef.current / sampleCount : 0;
+    return {
+      peakLevel: peakSignalLevelRef.current,
+      averageLevel,
+    };
+  }, []);
+
+  const isSilentRecording = useCallback((durationMs: number) => {
+    if (durationMs < SILENCE_GUARD_MIN_DURATION_MS) {
+      return false;
+    }
+
+    const { peakLevel, averageLevel } = getSignalLevels();
+    return peakLevel <= SILENCE_GUARD_MAX_PEAK_LEVEL && averageLevel <= SILENCE_GUARD_MAX_AVERAGE_LEVEL;
+  }, [getSignalLevels]);
+
+  useEffect(() => {
+    isMicMutedRef.current = isMicMuted;
+  }, [isMicMuted]);
+
+  const isVoiceCycleActive = isRecording || state === 'processing' || state === 'acting' || state === 'speaking';
+  const transcriptText = statusTranscript || liveTranscript;
+  const isTranscriptVisible = !isComposerOpen && (isVoiceCycleActive || (!!transcriptText && state !== 'idle'));
+
+  useEffect(() => {
+    const layout: SallyBarLayout = isComposerOpen
+      ? 'composer'
+      : isTranscriptVisible
+        ? 'transcript'
+        : state === 'idle'
+          ? 'idle'
+          : 'compact';
+    void syncLayout(layout);
+    if (isComposerOpen) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [isComposerOpen, isTranscriptVisible, state, syncLayout]);
+
+  // Store sound functions in refs so the subscription effect can access them.
+  // Initialized with no-ops because the useCallback declarations come later in the
+  // function body. The useEffect below updates the ref after every render (no deps
+  // array) so it runs after all variables are declared, avoiding the TDZ crash.
+  const soundsRef = useRef<{ playCompleteChime: () => void; playErrorChime: () => void }>({ playCompleteChime: () => {}, playErrorChime: () => {} });
+  useEffect(() => {
+    soundsRef.current = { playCompleteChime, playErrorChime };
+  });
+
+  useEffect(() => {
+    let prevState: SallyState = 'idle';
+    const unsubs = [
+      ipc.subscribe('sally:state-changed', (data) => {
+        const nextState = data.state;
+        // Play completion chime when transitioning from acting/speaking to idle
+        if (nextState === 'idle' && (prevState === 'acting' || prevState === 'speaking')) {
+          soundsRef.current.playCompleteChime();
+        }
+        prevState = nextState;
+        setState(nextState);
+        if (nextState === 'listening') {
+          setStatusTranscript('');
+        }
+        if (nextState === 'awaiting_response') {
+          setIsComposerOpen(true);
+        }
+      }),
+      ipc.subscribe('sally:chat', (data) => {
+        const prefix = data.role === 'user' ? 'You: ' : data.role === 'assistant' ? 'Sally: ' : '';
+        setStatusTranscript(`${prefix}${data.text}`.trim());
+      }),
+      ipc.subscribe('sally:step', (data) => {
+        setStatusTranscript(`Step: ${data.action} - ${data.details}`.trim());
+      }),
+      ipc.subscribe('sally:mic-muted-changed', (data) => {
+        setIsMicMuted(data.muted);
+      }),
+      ipc.subscribe('sally:hotkey-changed', (binding) => {
+        if (binding && typeof binding.label === 'string' && binding.label.length > 0) {
+          setPushToTalkKeyLabel(binding.label);
+        }
+      }),
+    ];
+
+    void ipc.invoke('sally:get-mic-muted').then((muted) => {
+      setIsMicMuted(muted);
+    });
+
+    void ipc.invoke('sally:get-hotkey').then((binding) => {
+      if (binding && typeof binding.label === 'string' && binding.label.length > 0) {
+        setPushToTalkKeyLabel(binding.label);
+      }
+    }).catch(() => {
+      /* ignore — fall back to static label */
+    });
+
+    return () => unsubs.forEach((u) => u());
+  }, []);
+
+  // Only clear transcript when we've fully returned to idle (not during the
+  // brief gap between recording stop and transcription starting).
+  const prevStateRef = useRef<SallyState>('idle');
+  useEffect(() => {
+    const wasActive = prevStateRef.current !== 'idle';
+    prevStateRef.current = state;
+
+    // Clear transcript only when transitioning TO idle from a non-idle state,
+    // and recording has stopped. This avoids the race where isRecording=false
+    // briefly while state is still idle before handleTranscription sets 'processing'.
+    if (state === 'idle' && wasActive && !isRecording) {
+      const timer = setTimeout(() => {
+        setLiveTranscript('');
+        setStatusTranscript('');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [isRecording, state]);
+
+  useEffect(() => {
+    const scroller = transcriptScrollRef.current;
+    if (!scroller) return;
+    scroller.scrollLeft = scroller.scrollWidth;
+  }, [transcriptText, isTranscriptVisible]);
+
+  useEffect(() => {
+    const unsubStart = window.electron.on('hotkey:start-recording', () => startRecording());
+    const unsubStop = window.electron.on('hotkey:stop-recording', () => stopRecording());
+    const unsubCancel = window.electron.on('hotkey:cancel-recording', () => cancelRecording());
+    const unsubConfirmationListen = ipc.subscribe('sally:auto-confirmation-listen', (data) => {
+      void startRecording('confirmation', data);
+    });
+    const unsubConfirmationStop = ipc.subscribe('sally:auto-confirmation-stop', () => {
+      cancelRecording({ silent: true, confirmationOnly: true });
+    });
+    return () => {
+      unsubStart();
+      unsubStop();
+      unsubCancel();
+      unsubConfirmationListen();
+      unsubConfirmationStop();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // TTS audio playback via IPC — receives base64 MP3 from main process, plays via HTML5 Audio
+  useEffect(() => {
+    let currentPlayback: { context: AudioContext; source: AudioBufferSourceNode } | null = null;
+    let playbackToken = 0;
+
+    const stopPlayback = () => {
+      playbackToken += 1;
+      if (!currentPlayback) return;
+      try {
+        currentPlayback.source.stop();
+      } catch {
+        // Ignore stop errors if playback already ended.
+      }
+      void currentPlayback.context.close();
+      currentPlayback = null;
+    };
+
+    const unsubAudio = ipc.subscribe('sally:tts-audio', (data) => {
+      stopPlayback();
+
+      const { audioBase64, id } = data;
+      const token = playbackToken;
+      void (async () => {
+        try {
+          const binary = window.atob(audioBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i += 1) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+
+          const context = new AudioContext();
+          await context.resume();
+          if (token !== playbackToken) {
+            void context.close();
+            return;
+          }
+          const decoded = await context.decodeAudioData(bytes.buffer.slice(0));
+          if (token !== playbackToken) {
+            void context.close();
+            return;
+          }
+          const source = context.createBufferSource();
+          source.buffer = decoded;
+          source.connect(context.destination);
+          currentPlayback = { context, source };
+
+          source.onended = () => {
+            void context.close();
+            currentPlayback = null;
+            window.electron.send('sally:tts-playback-complete', { id });
+          };
+
+          source.start(0);
+        } catch (err) {
+          rendererLogger.error('[TTS] Failed to play decoded audio:', err);
+          ipc.send('sally:tts-playback-error', {
+            id,
+            message: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+          });
+          stopPlayback();
+          window.electron.send('sally:tts-playback-complete', { id });
+        }
+      })();
+    });
+
+    const unsubStop = ipc.subscribe('sally:tts-stop', () => {
+      stopPlayback();
+    });
+
+    return () => {
+      unsubAudio();
+      unsubStop();
+      stopPlayback();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      if (livePreviewIntervalRef.current !== null) {
+        window.clearInterval(livePreviewIntervalRef.current);
+      }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      analyserRef.current?.disconnect();
+    };
+  }, []);
+
+  // Sound effect helper: plays a sequence of tones
+  const playTones = useCallback((tones: Array<{ freq: number; start: number; dur: number; type?: OscillatorType; vol?: number }>) => {
+    const ctx = new AudioContext();
+    const gain = ctx.createGain();
+    gain.connect(ctx.destination);
+
+    tones.forEach(({ freq, start, dur, type = 'sine', vol = 0.18 }) => {
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+      env.gain.setValueAtTime(0, ctx.currentTime + start);
+      env.gain.linearRampToValueAtTime(vol, ctx.currentTime + start + 0.01);
+      env.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + dur);
+      osc.connect(env);
+      env.connect(gain);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + dur);
+    });
+
+    setTimeout(() => { void ctx.close(); }, 800);
+  }, []);
+
+  // Start recording: two ascending tones (upbeat)
+  const playStartChime = useCallback(() => {
+    playTones([
+      { freq: 880, start: 0, dur: 0.08 },
+      { freq: 1320, start: 0.09, dur: 0.12 },
+    ]);
+  }, [playTones]);
+
+  // Stop recording / sent: single soft confirmation blip
+  const playSendChime = useCallback(() => {
+    playTones([
+      { freq: 1046, start: 0, dur: 0.1, vol: 0.14 },
+    ]);
+  }, [playTones]);
+
+  // Task complete: three ascending happy tones
+  const playCompleteChime = useCallback(() => {
+    playTones([
+      { freq: 784, start: 0, dur: 0.1 },
+      { freq: 988, start: 0.12, dur: 0.1 },
+      { freq: 1318, start: 0.24, dur: 0.18 },
+    ]);
+  }, [playTones]);
+
+  // Error / failed: two descending tones
+  const playErrorChime = useCallback(() => {
+    playTones([
+      { freq: 440, start: 0, dur: 0.12, type: 'triangle', vol: 0.15 },
+      { freq: 330, start: 0.14, dur: 0.18, type: 'triangle', vol: 0.12 },
+    ]);
+  }, [playTones]);
+
+  // Cancel: quick descending blip
+  const playCancelChime = useCallback(() => {
+    playTones([
+      { freq: 660, start: 0, dur: 0.06, vol: 0.12 },
+      { freq: 440, start: 0.07, dur: 0.1, vol: 0.1 },
+    ]);
+  }, [playTones]);
+
+  const cleanupRecordingUi = useCallback(() => {
+    setIsRecording(false);
+    setAudioLevel(0);
+    recordingModeRef.current = null;
+    clearConfirmationCaptureState();
+
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+
+    analyserRef.current?.disconnect();
+    analyserRef.current = null;
+  }, [clearConfirmationCaptureState]);
+
+  const releaseRecordingStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }, []);
+
+  const blobToBase64 = useCallback((blob: Blob) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result !== 'string') {
+          reject(new Error('Failed to read audio blob'));
+          return;
+        }
+        resolve(reader.result.split(',')[1] ?? '');
+      };
+      reader.onerror = () => {
+        reject(reader.error ?? new Error('Failed to read audio blob'));
+      };
+      reader.readAsDataURL(blob);
+    });
+  }, []);
+
+  const stopLiveTranscriptPreview = useCallback(() => {
+    livePreviewSessionRef.current += 1;
+    livePreviewRequestInFlightRef.current = false;
+    if (livePreviewIntervalRef.current !== null) {
+      window.clearInterval(livePreviewIntervalRef.current);
+      livePreviewIntervalRef.current = null;
+    }
+  }, []);
+
+  const requestLiveTranscriptPreview = useCallback(async (sessionId: number) => {
+    if (livePreviewRequestInFlightRef.current || audioChunksRef.current.length === 0) return;
+
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') return;
+
+    const actualMimeType = recorder.mimeType || 'audio/webm';
+    const blob = new Blob(audioChunksRef.current, { type: actualMimeType });
+    if (blob.size < MIN_LIVE_PREVIEW_BYTES) return;
+    const durationMs = Math.max(Date.now() - recordingStartedAtRef.current, 0);
+    if (durationMs < MIN_LIVE_PREVIEW_DURATION_MS) return;
+    if (isSilentRecording(durationMs)) return;
+
+    livePreviewRequestInFlightRef.current = true;
+    try {
+      const base64 = await blobToBase64(blob);
+      if (!base64 || livePreviewSessionRef.current !== sessionId) return;
+
+      const transcript = await ipc.invoke('sally:preview-transcription', {
+        audioBase64: base64,
+        mimeType: actualMimeType,
+        durationMs,
+      });
+
+      if (livePreviewSessionRef.current !== sessionId) return;
+      if (transcript?.trim()) {
+        setLiveTranscript(transcript.trim());
+      }
+    } catch (error) {
+      rendererLogger.warn('Live transcript preview failed:', error);
+    } finally {
+      livePreviewRequestInFlightRef.current = false;
+    }
+  }, [blobToBase64, isSilentRecording]);
+
+  const startLiveTranscriptPreview = useCallback(() => {
+    stopLiveTranscriptPreview();
+    const sessionId = livePreviewSessionRef.current;
+
+    void requestLiveTranscriptPreview(sessionId);
+    livePreviewIntervalRef.current = window.setInterval(() => {
+      void requestLiveTranscriptPreview(sessionId);
+    }, LIVE_PREVIEW_INTERVAL_MS);
+  }, [requestLiveTranscriptPreview, stopLiveTranscriptPreview]);
+
+  const startRecording = useCallback(async (
+    mode: 'hotkey' | 'confirmation' = 'hotkey',
+    confirmationOptions?: AutoConfirmationListenPayload,
+  ) => {
+    if (isMicMutedRef.current || isRecording) return;
+
+    try {
+      recordingModeRef.current = mode;
+      clearConfirmationCaptureState();
+      setIsComposerOpen(false);
+      setLiveTranscript('');
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: VOICE_CAPTURE_CONSTRAINTS });
+      streamRef.current = stream;
+      resetSignalLevels();
+
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const dataArray = new Uint8Array(analyser.fftSize);
+      const updateLevel = () => {
+        analyser.getByteTimeDomainData(dataArray);
+        let sumSquares = 0;
+        for (const value of dataArray) {
+          const centered = (value - 128) / 128;
+          sumSquares += centered * centered;
+        }
+        const rms = Math.sqrt(sumSquares / dataArray.length);
+        currentSignalLevelRef.current = rms;
+        peakSignalLevelRef.current = Math.max(peakSignalLevelRef.current, rms);
+        signalLevelTotalRef.current += rms;
+        signalLevelSamplesRef.current += 1;
+        setAudioLevel(Math.min(rms * 12, 1));
+
+        if (recordingModeRef.current === 'confirmation' && !confirmationStopRequestedRef.current) {
+          const now = Date.now();
+          if (rms >= CONFIRMATION_ACTIVE_LEVEL) {
+            confirmationSpeechDetectedRef.current = true;
+            confirmationSilenceStartedAtRef.current = null;
+          } else if (confirmationSpeechDetectedRef.current) {
+            confirmationSilenceStartedAtRef.current ??= now;
+            if (now - confirmationSilenceStartedAtRef.current >= confirmationTrailingSilenceMsRef.current) {
+              confirmationStopRequestedRef.current = true;
+              void stopRecordingRef.current?.();
+              return;
+            }
+          }
+        }
+
+        animFrameRef.current = requestAnimationFrame(updateLevel);
+      };
+      updateLevel();
+
+      const preferredTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+      const supportedType = preferredTypes.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
+      const recorder = new MediaRecorder(
+        stream,
+        supportedType
+          ? { mimeType: supportedType, audioBitsPerSecond: AUDIO_BITS_PER_SECOND }
+          : { audioBitsPerSecond: AUDIO_BITS_PER_SECOND },
+      );
+      audioChunksRef.current = [];
+      recordingStartedAtRef.current = Date.now();
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.start(100);
+      mediaRecorderRef.current = recorder;
+      startLiveTranscriptPreview();
+      setIsRecording(true);
+      playStartChime();
+
+      if (mode === 'confirmation') {
+        confirmationTrailingSilenceMsRef.current = Math.max(
+          confirmationOptions?.trailingSilenceMs ?? DEFAULT_CONFIRMATION_TRAILING_SILENCE_MS,
+          300,
+        );
+        confirmationMaxDurationTimeoutRef.current = window.setTimeout(() => {
+          if (
+            recordingModeRef.current === 'confirmation'
+            && mediaRecorderRef.current
+            && mediaRecorderRef.current.state !== 'inactive'
+            && !confirmationStopRequestedRef.current
+          ) {
+            confirmationStopRequestedRef.current = true;
+            void stopRecordingRef.current?.();
+          }
+        }, Math.max(confirmationOptions?.maxDurationMs ?? DEFAULT_CONFIRMATION_MAX_DURATION_MS, 1500));
+      }
+    } catch (error) {
+      rendererLogger.error('Failed to start recording:', error);
+      cleanupRecordingUi();
+      resetSignalLevels();
+      stopLiveTranscriptPreview();
+      releaseRecordingStream();
+    }
+  }, [cleanupRecordingUi, clearConfirmationCaptureState, isRecording, playStartChime, releaseRecordingStream, resetSignalLevels, startLiveTranscriptPreview, stopLiveTranscriptPreview]);
+
+  const stopRecording = useCallback(async () => {
+    const recordingMode = recordingModeRef.current ?? 'hotkey';
+    confirmationStopRequestedRef.current = true;
+    cleanupRecordingUi();
+    stopLiveTranscriptPreview();
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') return;
+
+    streamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = false;
+    });
+    playSendChime();
+
+    return new Promise<void>((resolve) => {
+      recorder.onstop = async () => {
+        const actualMimeType = recorder.mimeType || 'audio/webm';
+        const blob = new Blob(audioChunksRef.current, { type: actualMimeType });
+        releaseRecordingStream();
+        const durationMs = Math.max(Date.now() - recordingStartedAtRef.current, 0);
+        const { peakLevel, averageLevel } = getSignalLevels();
+        if (isSilentRecording(durationMs)) {
+          await ipc.invoke('sally:handle-silence', {
+            durationMs,
+            peakLevel,
+            averageLevel,
+            mode: recordingMode === 'confirmation' ? 'confirmation' : 'default',
+          });
+          recordingStartedAtRef.current = 0;
+          resetSignalLevels();
+          resolve();
+          return;
+        }
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64 = (reader.result as string).split(',')[1];
+          if (base64) {
+            const transcript = await ipc.invoke('sally:transcribe', {
+              audioBase64: base64,
+              mimeType: actualMimeType,
+              durationMs,
+            });
+            if (transcript?.trim()) {
+              setLiveTranscript(transcript.trim());
+            }
+          } else {
+            await ipc.invoke('sally:handle-silence', {
+              durationMs,
+              peakLevel,
+              averageLevel,
+              mode: recordingMode === 'confirmation' ? 'confirmation' : 'default',
+            });
+          }
+          recordingStartedAtRef.current = 0;
+          resetSignalLevels();
+          resolve();
+        };
+        reader.readAsDataURL(blob);
+      };
+      try {
+        recorder.requestData();
+      } catch {
+        // Ignore flush failures and still stop immediately.
+      }
+
+      try {
+        recorder.stop();
+      } catch {
+        releaseRecordingStream();
+        recordingStartedAtRef.current = 0;
+        resetSignalLevels();
+        resolve();
+      }
+      mediaRecorderRef.current = null;
+    });
+  }, [cleanupRecordingUi, getSignalLevels, isSilentRecording, playSendChime, releaseRecordingStream, resetSignalLevels, stopLiveTranscriptPreview]);
+
+  useEffect(() => {
+    stopRecordingRef.current = stopRecording;
+  }, [stopRecording]);
+
+  const cancelRecording = useCallback((options?: { silent?: boolean; confirmationOnly?: boolean }) => {
+    if (options?.confirmationOnly && recordingModeRef.current !== 'confirmation') {
+      return;
+    }
+
+    if (!options?.silent) {
+      playCancelChime();
+    }
+    const recorder = mediaRecorderRef.current;
+    cleanupRecordingUi();
+    stopLiveTranscriptPreview();
+    releaseRecordingStream();
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
+    }
+    mediaRecorderRef.current = null;
+    recordingStartedAtRef.current = 0;
+    resetSignalLevels();
+    setLiveTranscript('');
+  }, [cleanupRecordingUi, playCancelChime, releaseRecordingStream, resetSignalLevels, stopLiveTranscriptPreview]);
+
+  const handleSendInstruction = useCallback(() => {
+    const text = inputText.trim();
+    if (!text) return;
+
+    void ipc.invoke('sally:send-instruction', text);
+    setInputText('');
+    setIsComposerOpen(false);
+  }, [inputText]);
+
+  const handleInputKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      handleSendInstruction();
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setIsComposerOpen(false);
+    }
+  }, [handleSendInstruction]);
+
+  const handlePillBodyClick = useCallback(() => {
+    void ipc.invoke('window:show-config');
+  }, []);
+
+  const handleClose = useCallback(() => {
+    setIsComposerOpen(false);
+    if (state !== 'idle' && state !== 'awaiting_response') {
+      void ipc.invoke('sally:cancel');
+      return;
+    }
+    void ipc.invoke('window:hide-pill');
+  }, [state]);
+
+  const handleComposerToggle = useCallback(() => {
+    setIsComposerOpen((current) => !current);
+  }, []);
+
+  const handleMicToggle = useCallback(() => {
+    const nextMuted = !isMicMutedRef.current;
+
+    if (nextMuted && mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      cancelRecording();
+    }
+
+    setIsMicMuted(nextMuted);
+    isMicMutedRef.current = nextMuted;
+    void ipc.invoke('sally:set-mic-muted', nextMuted);
+  }, [cancelRecording]);
+
+  const renderStatusVisual = () => {
+    if (isRecording) {
+      return (
+        <div style={{ width: 60, height: 18, flexShrink: 0 }}>
+          <WaveformView isActive={isRecording} audioLevel={audioLevel} dotCount={14} color={THEME.status.success} />
+        </div>
+      );
+    }
+
+    if (state === 'processing') {
+      return (
+        <div
+          className="animate-spin"
+          style={{
+            width: 12,
+            height: 12,
+            borderRadius: '50%',
+            border: `1.5px solid ${THEME.status.warningBright}`,
+            borderTopColor: 'transparent',
+            flexShrink: 0,
+          }}
+        />
+      );
+    }
+
+    return (
+      <span
+        className={!isMicMuted && state !== 'idle' ? 'animate-pulse' : ''}
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          backgroundColor: isMicMuted ? THEME.status.dangerMuted : stateColors[state],
+          flexShrink: 0,
+        }}
+      />
+    );
+  };
+
+  const isBusy = state !== 'idle' && state !== 'awaiting_response';
+  const isIdlePrompt = state === 'idle' && !isComposerOpen && !isMicMuted;
+  const statusLabel = isMicMuted
+    ? 'Mic muted'
+    : isRecording
+      ? ''
+      : state === 'idle'
+        ? `Hold ${pushToTalkKeyLabel} to Talk`
+        : stateLabels[state];
+  const transcriptPlaceholder = isRecording
+    ? 'Listening for speech...'
+    : state === 'processing'
+      ? 'Transcribing your request...'
+      : state === 'acting' || state === 'speaking'
+        ? 'Working on your request...'
+        : 'Transcript ready';
+
+  return (
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: isComposerOpen || isTranscriptVisible ? 10 : 0,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          height: 48,
+          width: isComposerOpen || isTranscriptVisible ? PILL_WIDTH : '100%',
+          padding: '0 6px 0 4px',
+          gap: 6,
+          background: PILL_BG,
+          backdropFilter: PILL_BLUR,
+          WebkitBackdropFilter: PILL_BLUR,
+          border: PILL_BORDER,
+          boxShadow: THEME.shadow.pill,
+          borderRadius: 24,
+          flexShrink: 0,
+          // @ts-expect-error: Electron-specific
+          WebkitAppRegion: 'drag',
+          cursor: 'grab',
+        }}
+      >
+        <div
+          onClick={handlePillBodyClick}
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: '50%',
+            overflow: 'hidden',
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            // @ts-expect-error: Electron-specific
+            WebkitAppRegion: 'no-drag',
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.transform = 'scale(1.05)';
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.transform = 'scale(1)';
+          }}
+        >
+          <img src={logoSrc} alt="" style={{ width: 48, height: 48, objectFit: 'cover' }} />
+        </div>
+
+        <div
+          style={{
+            flex: 1,
+            minWidth: isIdlePrompt ? 230 : 0,
+            height: 34,
+            borderRadius: 17,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: isIdlePrompt ? '0 14px' : '0 12px',
+            background: isMicMuted ? THEME.status.dangerPanel : THEME.glass.light,
+            border: isMicMuted ? `1px solid ${THEME.status.dangerBorderSoft}` : `1px solid ${THEME.glass.border}`,
+            color: THEME.text.inverse,
+            // @ts-expect-error: Electron-specific
+            WebkitAppRegion: 'no-drag',
+          }}
+        >
+          {renderStatusVisual()}
+          {statusLabel && (
+            <span
+              style={{
+                fontSize: 11.5,
+                fontWeight: 600,
+                color: isMicMuted ? THEME.status.dangerSoftText : THEME.text.mutedInverse,
+                whiteSpace: 'nowrap',
+                overflow: isIdlePrompt ? 'visible' : 'hidden',
+                textOverflow: isIdlePrompt ? 'clip' : 'ellipsis',
+              }}
+            >
+              {statusLabel}
+            </span>
+          )}
+        </div>
+
+        <button
+          onClick={handleMicToggle}
+          title={isMicMuted ? 'Unmute microphone' : 'Mute microphone'}
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: isMicMuted ? THEME.status.dangerGlass : THEME.glass.button,
+            border: isMicMuted ? `1px solid ${THEME.status.dangerBorderSoftHover}` : 'none',
+            color: isMicMuted ? THEME.status.dangerSoftText : THEME.text.mutedInverse,
+            cursor: 'pointer',
+            flexShrink: 0,
+            transition: 'background 0.15s, color 0.15s, transform 0.15s',
+            // @ts-expect-error: Electron-specific
+            WebkitAppRegion: 'no-drag',
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.transform = 'scale(1.08)';
+            event.currentTarget.style.background = isMicMuted ? THEME.status.dangerGlassHover : THEME.glass.buttonHover;
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.transform = 'scale(1)';
+            event.currentTarget.style.background = isMicMuted ? THEME.status.dangerGlass : THEME.glass.button;
+          }}
+        >
+          <MicIcon muted={isMicMuted} />
+        </button>
+
+        <button
+          onClick={handleComposerToggle}
+          title={isComposerOpen ? 'Hide keyboard' : 'Show keyboard'}
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: isComposerOpen ? THEME.accent.primaryGlass : THEME.glass.button,
+            border: isComposerOpen ? `1px solid ${THEME.accent.primaryGlassBorder}` : 'none',
+            color: isComposerOpen ? THEME.accent.primaryDisabledBg : THEME.text.mutedInverse,
+            cursor: 'pointer',
+            flexShrink: 0,
+            transition: 'background 0.15s, color 0.15s, transform 0.15s',
+            // @ts-expect-error: Electron-specific
+            WebkitAppRegion: 'no-drag',
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.transform = 'scale(1.08)';
+            event.currentTarget.style.background = isComposerOpen ? THEME.accent.primaryGlassHover : THEME.glass.buttonHover;
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.transform = 'scale(1)';
+            event.currentTarget.style.background = isComposerOpen ? THEME.accent.primaryGlass : THEME.glass.button;
+          }}
+        >
+          <KeyboardIcon />
+        </button>
+
+        <button
+          onClick={handleClose}
+          title={isBusy ? 'Cancel current action' : 'Dismiss'}
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: isBusy ? THEME.status.dangerSoft : THEME.glass.button,
+            border: 'none',
+            color: isBusy ? THEME.status.dangerSoftText : THEME.text.softInverse,
+            cursor: 'pointer',
+            flexShrink: 0,
+            transition: 'background 0.15s, color 0.15s, transform 0.15s',
+            // @ts-expect-error: Electron-specific
+            WebkitAppRegion: 'no-drag',
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.background = isBusy ? THEME.status.dangerSoftHover : THEME.glass.buttonHover;
+            event.currentTarget.style.color = THEME.text.inverse;
+            event.currentTarget.style.transform = 'scale(1.08)';
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.background = isBusy ? THEME.status.dangerSoft : THEME.glass.button;
+            event.currentTarget.style.color = isBusy ? THEME.status.dangerSoftText : THEME.text.softInverse;
+            event.currentTarget.style.transform = 'scale(1)';
+          }}
+        >
+          <CloseIcon />
+        </button>
+      </div>
+
+      {isTranscriptVisible && (
+        <div
+          style={{
+            width: TRANSCRIPT_WIDTH,
+            height: 46,
+            padding: '0 14px',
+            borderRadius: 23,
+            background: COMPOSER_BG,
+            backdropFilter: PILL_BLUR,
+            WebkitBackdropFilter: PILL_BLUR,
+            border: COMPOSER_BORDER,
+            boxShadow: THEME.shadow.panel,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            flexShrink: 0,
+            // @ts-expect-error: Electron-specific
+            WebkitAppRegion: 'no-drag',
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: THEME.status.success,
+              flexShrink: 0,
+              boxShadow: `0 0 12px ${THEME.status.successGlow}`,
+            }}
+          />
+          <div
+            ref={transcriptScrollRef}
+            style={{
+              flex: 1,
+              display: 'flex',
+              alignItems: 'center',
+              minWidth: 0,
+              overflowX: 'hidden',
+              overflowY: 'hidden',
+              whiteSpace: 'nowrap',
+              position: 'relative',
+              maskImage: transcriptText ? 'linear-gradient(to left, transparent 0%, black 10%, black 100%)' : 'none',
+              WebkitMaskImage: transcriptText ? 'linear-gradient(to left, transparent 0%, black 10%, black 100%)' : 'none',
+            }}
+          >
+            <span
+              style={{
+                display: 'inline-block',
+                paddingRight: 20,
+                fontSize: 12,
+                fontWeight: 500,
+                color: transcriptText ? THEME.text.mutedInverse : THEME.text.placeholderInverse,
+                transform: 'translateY(-1px)',
+              }}
+            >
+              {transcriptText || transcriptPlaceholder}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {isComposerOpen && (
+        <div
+          style={{
+            width: '100%',
+            maxWidth: COMPOSER_WIDTH,
+            padding: 12,
+            borderRadius: 22,
+            background: COMPOSER_BG,
+            backdropFilter: PILL_BLUR,
+            WebkitBackdropFilter: PILL_BLUR,
+            border: COMPOSER_BORDER,
+            boxShadow: THEME.shadow.panelStrong,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            // @ts-expect-error: Electron-specific
+            WebkitAppRegion: 'no-drag',
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 600, color: THEME.text.subtleInverse, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+            Type to Sally
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              ref={inputRef}
+              type="text"
+              value={inputText}
+              onChange={(event) => setInputText(event.target.value)}
+              onKeyDown={handleInputKeyDown}
+              placeholder="Type a question or command..."
+              style={{
+                flex: 1,
+                height: 38,
+                padding: '0 12px',
+                background: THEME.glass.input,
+                border: `1px solid ${THEME.border.inverseSubtle}`,
+                borderRadius: 14,
+                color: THEME.text.inverse,
+                fontSize: 12.5,
+                outline: 'none',
+              }}
+              onFocus={(event) => {
+                event.target.style.borderColor = THEME.glass.focusBorder;
+              }}
+              onBlur={(event) => {
+                event.target.style.borderColor = THEME.border.inverseMuted;
+              }}
+            />
+
+            <button
+              onClick={handleSendInstruction}
+              disabled={!inputText.trim()}
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: '50%',
+                background: inputText.trim() ? ACCENT : THEME.glass.button,
+                border: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: THEME.text.inverse,
+                cursor: inputText.trim() ? 'pointer' : 'default',
+                flexShrink: 0,
+                transition: 'background 0.15s, transform 0.15s',
+              }}
+              onMouseEnter={(event) => {
+                if (!inputText.trim()) return;
+                event.currentTarget.style.background = THEME.accent.primaryHover;
+                event.currentTarget.style.transform = 'scale(1.05)';
+              }}
+              onMouseLeave={(event) => {
+                event.currentTarget.style.background = inputText.trim() ? ACCENT : THEME.glass.button;
+                event.currentTarget.style.transform = 'scale(1)';
+              }}
+            >
+              <SendIcon />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

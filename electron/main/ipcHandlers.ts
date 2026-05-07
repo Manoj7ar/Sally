@@ -1,0 +1,303 @@
+// IPC handlers for Sally
+import { app, ipcMain, shell, systemPreferences } from 'electron';
+import { hotkeyManager } from './hotkeyManager.js';
+import { apiKeyManager } from './managers/apiKeyManager.js';
+import { microphoneManager } from './managers/microphoneManager.js';
+import { sessionManager } from './managers/sessionManager.js';
+import { macPermissionsManager } from './managers/macPermissionsManager.js';
+import { browserService } from './services/browserService.js';
+import { windowManager } from './windowManager.js';
+import { store, STORE_KEYS } from './utils/store.js';
+import { mainLogger } from './utils/logger.js';
+import { isMacOS, isWindows } from './platform/desktopHost.js';
+import {
+  getWindowsPermissionsStatus,
+  openWindowsPrivacyPane,
+  requestWindowsMicrophoneAccess,
+} from './platform/windowsPermissions.js';
+import type { BrowserActionRequest, MacPermissionPane, MacPermissionState, MacPermissionsStatus } from '../../shared/types.js';
+
+function unsupportedPermissionsStatus(): MacPermissionsStatus {
+  return {
+    microphone: 'unknown',
+    screen: 'unknown',
+    accessibility: 'unknown',
+    pushToTalkHotkeyActive: hotkeyManager.isRegistered(),
+  };
+}
+
+export function registerIpcHandlers(): void {
+  // ── Config ──
+
+  ipcMain.handle('sally:get-config', () => {
+    const accessibilityTrusted =
+      isMacOS ? systemPreferences.isTrustedAccessibilityClient(false) : false;
+    return {
+      provider: apiKeyManager.getProvider(),
+      hasProviderKey: apiKeyManager.hasApiKey(),
+      hasElevenLabsKey: apiKeyManager.hasElevenLabsKey(),
+      hasGeminiKey: apiKeyManager.hasGeminiApiKey(),
+      autoResearchScreenQuestions: apiKeyManager.getAutoResearchScreenQuestions(),
+      audioDevice: store.get(STORE_KEYS.AUDIO_DEVICE) || 'default',
+      openAtLogin: apiKeyManager.getOpenAtLogin(),
+      accessibilityTrusted,
+      pushToTalkHotkeyActive: hotkeyManager.isRegistered(),
+      pushToTalk: hotkeyManager.getBinding(),
+    };
+  });
+
+  ipcMain.handle('sally:get-provider', () => {
+    return apiKeyManager.getProvider();
+  });
+
+  ipcMain.handle('sally:set-provider', (_e, provider: Parameters<typeof apiKeyManager.setProvider>[0]) => {
+    apiKeyManager.setProvider(provider);
+  });
+
+  ipcMain.handle('sally:set-api-key', async (_e, data: { provider: Parameters<typeof apiKeyManager.setApiKey>[0]; key: string }) => {
+    apiKeyManager.setApiKey(data.provider, data.key);
+  });
+
+  ipcMain.handle('sally:test-api-key', async (_e, data: { provider: Parameters<typeof apiKeyManager.testApiKey>[0]; key: string }) => {
+    return apiKeyManager.testApiKey(data.provider, data.key);
+  });
+
+  ipcMain.handle('sally:clear-api-key', async () => {
+    apiKeyManager.clearApiKey();
+  });
+
+  ipcMain.handle('sally:set-elevenlabs-key', (_e, key: string) => {
+    apiKeyManager.setElevenLabsKey(key);
+  });
+
+  ipcMain.handle('sally:get-elevenlabs-key-status', () => {
+    return apiKeyManager.hasElevenLabsKey();
+  });
+
+  ipcMain.handle('sally:set-gemini-key', (_e, key: string) => {
+    apiKeyManager.setGeminiApiKey(key);
+  });
+
+  ipcMain.handle('sally:get-gemini-key-status', () => {
+    return apiKeyManager.hasGeminiApiKey();
+  });
+
+  ipcMain.handle('sally:set-auto-research-screen-questions', (_e, enabled: boolean) => {
+    apiKeyManager.setAutoResearchScreenQuestions(enabled);
+  });
+
+  ipcMain.handle('sally:get-auto-research-screen-questions', () => {
+    return apiKeyManager.getAutoResearchScreenQuestions();
+  });
+
+  ipcMain.handle('sally:set-open-at-login', (_e, enabled: boolean) => {
+    apiKeyManager.setOpenAtLogin(enabled);
+    app.setLoginItemSettings({ openAtLogin: enabled });
+  });
+
+  // ── Push-to-talk shortcut ──
+
+  ipcMain.handle('sally:get-hotkey', () => {
+    return hotkeyManager.getBinding();
+  });
+
+  ipcMain.handle('sally:start-hotkey-capture', () => {
+    return hotkeyManager.startCapture();
+  });
+
+  ipcMain.handle('sally:cancel-hotkey-capture', () => {
+    return hotkeyManager.cancelCapture();
+  });
+
+  ipcMain.handle('sally:reset-hotkey', () => {
+    const binding = hotkeyManager.resetBindingToDefault();
+    windowManager.broadcastToAll('sally:hotkey-changed', binding);
+    return binding;
+  });
+
+  // ── macOS Permissions ──
+
+  ipcMain.handle('permissions:get-status', () => {
+    if (isMacOS) {
+      return macPermissionsManager.getStatus();
+    }
+    if (isWindows) {
+      return getWindowsPermissionsStatus();
+    }
+    return unsupportedPermissionsStatus();
+  });
+
+  ipcMain.handle('permissions:request-microphone', async () => {
+    if (isMacOS) {
+      return macPermissionsManager.requestMicrophone();
+    }
+    if (isWindows) {
+      return requestWindowsMicrophoneAccess();
+    }
+    return 'unknown' as const;
+  });
+
+  ipcMain.handle('permissions:prompt-accessibility', (): MacPermissionState => {
+    if (isMacOS) {
+      return macPermissionsManager.promptAccessibility();
+    }
+    if (isWindows) {
+      try {
+        if (!hotkeyManager.isRegistered()) {
+          hotkeyManager.register();
+        }
+      } catch (error) {
+        mainLogger.warn('[IPC] Windows hotkey re-register after accessibility prompt failed:', error);
+      }
+      const status = getWindowsPermissionsStatus();
+      windowManager.broadcastToAll('permissions:status-changed', status);
+      return status.pushToTalkHotkeyActive ? 'granted' : 'unknown';
+    }
+    return 'unknown';
+  });
+
+  ipcMain.handle('permissions:open-pane', (_e, data: { pane: MacPermissionPane }) => {
+    if (isMacOS) {
+      macPermissionsManager.openSystemSettings(data.pane);
+      return;
+    }
+    if (isWindows) {
+      openWindowsPrivacyPane(data.pane);
+    }
+  });
+
+  // ── Audio ──
+
+  ipcMain.handle('sally:set-audio-device', (_e, deviceId: string) => {
+    store.set(STORE_KEYS.AUDIO_DEVICE, deviceId);
+  });
+
+  ipcMain.handle('sally:get-audio-device', () => {
+    return store.get(STORE_KEYS.AUDIO_DEVICE) || 'default';
+  });
+
+  // ── Voice Flow ──
+
+  ipcMain.handle('sally:transcribe', async (_e, data: { audioBase64: string; mimeType: string; durationMs?: number }) => {
+    return sessionManager.handleTranscription(data.audioBase64, data.mimeType, data.durationMs);
+  });
+
+  ipcMain.handle('sally:preview-transcription', async (_e, data: { audioBase64: string; mimeType: string; durationMs?: number }) => {
+    return sessionManager.previewTranscription(data.audioBase64, data.mimeType, data.durationMs);
+  });
+
+  ipcMain.handle('sally:handle-silence', async (_e, data: { durationMs?: number; peakLevel?: number; averageLevel?: number; mode?: 'default' | 'confirmation' }) => {
+    await sessionManager.handleSilence(data);
+  });
+
+  ipcMain.handle('sally:send-instruction', async (_e, instruction: string) => {
+    await sessionManager.executeTask(instruction);
+  });
+
+  ipcMain.handle('sally:cancel', async () => {
+    await sessionManager.cancel();
+  });
+
+  ipcMain.handle('sally:get-mic-muted', () => {
+    return microphoneManager.isMuted();
+  });
+
+  ipcMain.handle('sally:set-mic-muted', (_e, muted: boolean) => {
+    return microphoneManager.setMuted(muted);
+  });
+
+  // ── External ──
+
+  ipcMain.handle('sally:open-external', (_e, url: string) => {
+    shell.openExternal(url);
+  });
+
+  ipcMain.handle('browser:get-state', async () => {
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:new-tab', async (_e, data?: { url?: string }) => {
+    await browserService.openTab(data?.url, { activate: true });
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:switch-tab', async (_e, data: { tabId: string }) => {
+    await browserService.switchToTab(data.tabId);
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:close-tab', async (_e, data: { tabId: string }) => {
+    await browserService.closeTab(data.tabId);
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:navigate', async (_e, data: { url: string }) => {
+    await browserService.navigateActiveTab(data.url);
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:go-back', async () => {
+    await browserService.goBack();
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:go-forward', async () => {
+    await browserService.goForward();
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:reload', async () => {
+    await browserService.reloadActiveTab();
+    return browserService.getUiState();
+  });
+
+  ipcMain.handle('browser:get-snapshot', async () => {
+    const snapshot = await browserService.captureBrowserSnapshot().catch(() => null);
+    if (!snapshot) {
+      return null;
+    }
+
+    return {
+      pageUrl: snapshot.pageUrl,
+      pageTitle: snapshot.pageTitle,
+      headings: snapshot.pageContext.headings,
+      visibleMessages: snapshot.pageContext.visibleMessages,
+      interactiveCount: snapshot.pageContext.interactiveElements.length,
+      activeTabId: snapshot.activeTabId,
+      tabCount: snapshot.tabs.length,
+    };
+  });
+
+  ipcMain.handle('browser:execute-action', async (_e, action: BrowserActionRequest) => {
+    return browserService.executeAction(action);
+  });
+
+  ipcMain.handle('browser:inspect-gmail-draft', async () => {
+    return browserService.inspectGmailDraft();
+  });
+
+
+  // ── Window ──
+
+  ipcMain.handle('window:show-config', () => {
+    windowManager.showConfigWindow();
+  });
+
+  ipcMain.handle('window:show-browser', () => {
+    return browserService.launch().then(() => undefined);
+  });
+
+  ipcMain.handle('window:set-pill-layout', (_event, data: { layout: 'idle' | 'compact' | 'composer' | 'transcript' }) => {
+    windowManager.resizeSallyBar(data.layout);
+  });
+
+  ipcMain.handle('window:hide-pill', () => {
+    windowManager.hideSallyBar();
+  });
+
+  ipcMain.handle('window:show-pill', () => {
+    windowManager.showSallyBar();
+  });
+
+  mainLogger.info('IPC handlers registered');
+}

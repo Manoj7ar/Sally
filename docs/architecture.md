@@ -1,0 +1,948 @@
+# Sally — Complete System Architecture
+
+> **Gemini Live Agent Challenge 2026 | UI Navigator Track | Accessibility Focus**
+>
+> *"The AI assistant that sees, understands, and acts, so you don't have to click."*
+>
+> Sally lets people with motor impairments, RSI, cognitive disabilities, or anyone who wants hands-free web control use websites with just their voice. It combines Gemini's multimodal vision, push-to-talk input, a persistent Electron-owned browser with DOM access, and ElevenLabs neural TTS in a single, continuous control loop.
+
+---
+
+## Table of Contents
+
+1. [The Big Picture — Plain English](#1-the-big-picture--plain-english)
+2. [Why Sally Exists — The Problem](#2-why-sally-exists--the-problem)
+3. [How Sally Solves It — The Solution Loop](#3-how-sally-solves-it--the-solution-loop)
+4. [System Components Overview](#4-system-components-overview)
+5. [High-Level Architecture Diagram](#5-high-level-architecture-diagram)
+6. [Voice Flow — Step by Step](#6-voice-flow--step-by-step)
+7. [Gemini Vision Pipeline](#7-gemini-vision-pipeline)
+8. [Direct Gemini API](#8-direct-gemini-api)
+9. [Electron App Architecture](#9-electron-app-architecture)
+10. [Electron Browser Agentic Loop — DOM + Screenshot Control](#10-electron-browser-agentic-loop--dom--screenshot-control)
+11. [IPC Communication Layer](#11-ipc-communication-layer)
+12. [Session State Machine](#12-session-state-machine)
+13. [Provider System — Gemini-First Architecture](#13-provider-system--gemini-first-architecture)
+14. [Data Flow — Every Byte, Every Step](#14-data-flow--every-byte-every-step)
+15. [Deployment notes](#15-deployment-notes)
+16. [Security Architecture](#16-security-architecture)
+17. [Component File Map](#17-component-file-map)
+18. [Hackathon Judging Alignment](#18-hackathon-judging-alignment)
+19. [Sequence Diagrams — Real Scenarios](#19-sequence-diagrams--real-scenarios)
+20. [Error Handling & Fallback Paths](#20-error-handling--fallback-paths)
+21. [macOS Integration](#21-macos-integration)
+
+---
+
+## 1. The Big Picture — Plain English
+
+Imagine you have a motor impairment, RSI flare-up, or even a broken wrist. You want to get into Gmail, open compose, read the page, and move through the interface without touching a mouse. Modern websites make that harder than it should be. They hide controls behind menus, dialogs, popovers, sidebars, and tiny buttons that demand precise physical interaction.
+
+**Sally changes that interaction model.**
+
+You press and hold **Right Option** on macOS (labeled **Right Option** in the app; the underlying key is the right Alt / Option key). You say: *"Go to Gmail and click the compose button."* You release the key.
+
+Sally only runs on **macOS 11 (Big Sur) or later**: the main entry point (`electron/main/index.ts`) shows a `dialog.showErrorBox` and exits on Windows and Linux because windowing (vibrancy + screen-saver level), the AppKit application/dock menu, content protection, and Accessibility-based hotkey registration are macOS-only.
+
+Sally then:
+
+1. **Hears you** — records your voice through push-to-talk
+2. **Understands you** — transcribes the command using Gemini 2.5 Flash
+3. **Routes the task** — decides whether this is a screen question, summary, browser assistive command, or browser action task
+4. **Opens or reuses Sally browser** — a persistent Electron-owned browser window with saved cookies and sessions
+5. **Looks at the page** — captures the live browser screenshot and extracts DOM/page context
+6. **Thinks one step at a time** — sends screenshot + context + instruction to Gemini 2.5 Flash
+7. **Speaks back** — ElevenLabs narrates what Sally sees and what it is doing
+8. **Acts on the page** — clicks, fills, focuses, types, checks, scrolls, and navigates directly in the live DOM
+9. **Loops until done** — captures a fresh screenshot, asks Gemini for the next step, and repeats until the task completes
+
+All of that happens without the user needing to touch the mouse. Sally becomes the user's hands on screen.
+
+---
+
+## 2. Why Sally Exists — The Problem
+
+```text
+3.8 million workers suffer RSI annually in the US alone.
+1 in 5 people worldwide live with a disability.
+Modern websites still assume precise pointer control.
+```
+
+The modern web demands repeated physical effort:
+- clicking small buttons and links
+- typing into exact fields with precise focus
+- navigating menus, tabs, accordions, dialogs, and dropdowns
+- scrolling through long pages to find the right section
+- reacting to validation errors, banners, and state changes
+
+Traditional voice assistants help with simple commands, but they do not reliably understand a full visual web interface, choose the right element, and continue through a task. Meanwhile, fully manual browser automation often opens a fresh session, lands on the wrong page, or loses the user's context.
+
+**Sally exists to bridge that gap.** It is not just a chatbot and not just a browser macro runner. It is a multimodal UI navigator: it sees the interface, understands what is on screen, and executes the next useful action.
+
+---
+
+## 3. How Sally Solves It — The Solution Loop
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    THE SALLY LOOP                           │
+│                                                             │
+│  User holds hotkey -> speaks -> releases hotkey            │
+│         ↓                                                   │
+│  Gemini transcribes audio -> text instruction              │
+│         ↓                                                   │
+│  Router decides: screen-only or browser task              │
+│         ↓                                                   │
+│  ┌──► Sally browser captures screenshot + DOM context     │
+│  │         ↓                                                │
+│  │    Gemini 2.5 Flash -> narration + next action         │
+│  │         ↓                                                │
+│  │    ElevenLabs speaks narration aloud                    │
+│  │         ↓                                                │
+│  │    Browser service executes DOM-first action            │
+│  │         ↓                                                │
+│  └── Verify visible state changed, then loop again         │
+│         ↓                                                   │
+│  action=null -> task complete, back to idle                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+The loop is intentionally multimodal:
+- **Audio input** via push-to-talk speech
+- **Visual input** via screenshot capture
+- **Structured grounding** via DOM and accessibility context
+- **Audio output** via ElevenLabs narration
+- **Physical output** via browser actions in the live page
+
+This is the core idea behind Sally: screenshot understanding plus direct UI control.
+
+---
+
+## 4. System Components Overview
+
+| Component | Technology | Role |
+|-----------|-----------|------|
+| **Electron Shell** | Electron | Desktop host, windows, IPC, session lifecycle |
+| **Hotkey Manager** | `uiohook-napi` | Global push-to-talk hotkey |
+| **Audio Recorder** | Web Audio API | Captures mic audio as WebM/Opus |
+| **Gemini STT** | Gemini 2.5 Flash | Transcription and command recovery |
+| **Screenshot Service** | Electron `desktopCapturer` | Full-screen screenshot capture for desktop questions |
+| **Browser Service** | Electron `BrowserWindow` + `webContents` | Persistent Sally browser, screenshots, DOM extraction, DOM-first actions |
+| **Page Context Extractor** | Injected DOM scripts | Builds control inventory, headings, landmarks, dialogs, messages |
+| **Gemini Service** | `@google/genai` | Multimodal planning and visual question answering (user API key) |
+| **Cloud Logger** | `cloudLogger` → `mainLogger` | Local JSON lines only (module name is legacy; no remote logging pipeline) |
+| **Session Manager** | TypeScript | Main orchestration and state machine |
+| **TTS Service** | ElevenLabs API | Neural text-to-speech narration |
+| **Config Window** | React | Settings UI for keys, audio, research toggle |
+| **Sally Bar** | React | Floating status pill and mic capture surface |
+| **Border Overlay** | React | Active-state blue border plus the full-screen waiting modal |
+| **Electron Store** | `electron-store` | Persistent config storage |
+
+---
+
+## 5. High-Level Architecture Diagram
+
+```mermaid
+graph TD
+    A[Right Option + Microphone] -->|push-to-talk| B[Audio Recorder]
+    B -->|WebM audio| C[Gemini 2.5 Flash STT]
+    C --> D{Command Router}
+    D --> MAIN[Electron Main Process]
+
+    D -->|describe / summarize / screen question| E[Desktop Screenshot]
+    D -->|browser task| SB[Sally Browser]
+    D -->|browser assistive question| SB
+
+    SB --> SHOT[Live Browser Screenshot]
+    SB --> CTX[DOM + Accessibility Context]
+
+    E --> GEMINI[Gemini 2.5 Flash]
+    SHOT --> GEMINI
+    CTX --> GEMINI
+
+    GEMINI --> TTS[ElevenLabs TTS]
+    GEMINI --> CHECK{Action?}
+    CHECK -->|No| IDLE[Back to Idle]
+    CHECK -->|Yes| EXEC[DOM-first Action Execution]
+    EXEC --> SB
+
+    MAIN --> LOG[Local JSON logs]
+```
+
+The important change from earlier versions of Sally is the browser ownership model. Instead of starting a separate automation browser for each task, Sally now owns and reuses one persistent Electron browser surface. Gemini is called with the `@google/genai` SDK directly from the Electron main process using the user's API key.
+
+---
+
+## 6. Voice Flow — Step by Step
+
+Every spoken command goes through a structured pipeline.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant HKM as Hotkey Manager
+    participant Bar as Sally Bar
+    participant SES as Session Manager
+    participant STT as Gemini STT
+    participant BRS as Browser Service
+    participant GEM as Gemini Vision
+    participant TTS as ElevenLabs
+
+    User->>HKM: Hold Right Option
+    HKM->>Bar: hotkey:start-recording
+    Bar->>Bar: Record microphone audio
+
+    User->>Bar: Speak command
+
+    User->>HKM: Release Right Option
+    HKM->>Bar: hotkey:stop-recording
+    Bar->>SES: sally:transcribe(audio, signal stats)
+
+    SES->>STT: Transcribe + classify
+    STT-->>SES: canonicalCommand + intent + confidence
+
+    alt screen-only command
+        SES->>SES: capture active display
+        SES->>GEM: answer from screenshot
+        GEM-->>SES: spoken answer
+        SES->>TTS: speak(answer)
+    else browser command
+        SES->>BRS: open or reuse Sally browser
+        loop agentic browser loop
+            SES->>BRS: capture snapshot
+            BRS-->>SES: screenshot + pageContext
+            SES->>GEM: interpret screen
+            GEM-->>SES: narration + action
+            SES->>TTS: speak(narration)
+            SES->>BRS: executeAction(action)
+        end
+    end
+```
+
+The STT layer is intentionally conservative:
+- silence becomes a no-op
+- clipped phrases stay low confidence
+- incomplete commands do not launch tasks
+- browser navigation phrases get a command-focused retry before final rejection
+
+---
+
+## 7. Gemini Vision Pipeline
+
+### Input
+
+Every Gemini browser-planning call receives:
+1. **Screenshot** — base64 PNG of the current live browser page
+2. **Instruction** — the user's spoken or typed command
+3. **History** — recent actions and narration context
+4. **Page URL and title** — current browser location
+5. **Structured page context** — interactive controls, headings, landmarks, dialogs, visible messages, active element, and semantic summary
+6. **Source mode** — currently `electron_browser`
+
+For screen-only questions, Gemini receives:
+1. desktop or browser screenshot
+2. the user's visual question
+3. optional page context if the question is about a live browser page
+
+### System prompt goals
+
+Gemini is instructed to:
+- describe only what matters for the user's goal
+- choose one next action at a time
+- treat the screenshot as primary truth
+- use DOM/page context as grounding for precise targeting
+- avoid guessing when the screen is unclear
+- set `action` to `null` when the goal is already achieved
+
+### Browser planning JSON schema
+
+```json
+{
+  "narration": "I can see Gmail with a Compose button on the left.",
+  "action": {
+    "type": "click",
+    "selector": "Compose"
+  }
+}
+```
+
+### Screen-question JSON schema
+
+```json
+{
+  "answer": "I can see a page showing about ten people with their names underneath.",
+  "shouldResearch": false,
+  "researchQuery": null
+}
+```
+
+### Action family
+
+| Type | Fields | Example |
+|------|--------|---------|
+| `navigate` | `url` | `{"type":"navigate","url":"https://gmail.com"}` |
+| `click` | `selector`, `index?` | `{"type":"click","selector":"Compose"}` |
+| `fill` | `selector`, `value`, `index?` | `{"type":"fill","selector":"Search","value":"Gemini docs"}` |
+| `type` | `value` | `{"type":"type","value":"hello world"}` |
+| `select` | `selector`, `value` | `{"type":"select","selector":"Country","value":"United States"}` |
+| `press` | `value` | `{"type":"press","value":"Enter"}` |
+| `hover` | `selector`, `index?` | `{"type":"hover","selector":"Account menu"}` |
+| `focus` | `selector`, `index?` | `{"type":"focus","selector":"Search mail"}` |
+| `check` | `selector`, `index?` | `{"type":"check","selector":"Remember me"}` |
+| `uncheck` | `selector`, `index?` | `{"type":"uncheck","selector":"Subscribe"}` |
+| `scroll` | — | `{"type":"scroll"}` |
+| `scroll_up` | — | `{"type":"scroll_up"}` |
+| `back` | — | `{"type":"back"}` |
+| `wait` | `value?` | `{"type":"wait","value":"1000"}` |
+
+### Special browser-assistive paths
+
+Certain requests bypass the full action loop and answer directly from page context:
+- `what can I do here`
+- `what buttons are on this page`
+- `what form fields are here`
+- `what links are here`
+- `what headings are here`
+- `read the errors`
+
+That keeps common assistive questions fast and deterministic.
+
+---
+
+## 8. Direct Gemini API
+
+All multimodal Gemini calls (`interpretScreen`, screen questions, user-request routing, task planning, email draft, browser rescue) run in **`electron/main/services/geminiService.ts`** via **`GoogleGenAI`** from `@google/genai`, using the Gemini API key stored in Settings (`electron-store`).
+
+Speech-to-text uses the same key against the Generative Language REST API in **`transcriptionService.ts`**.
+
+Structured responses use JSON mode from the model; invalid JSON or missing required fields surface as errors to the session layer rather than silent canned fallbacks.
+
+---
+
+## 9. Electron App Architecture
+
+### Process model
+
+```text
+┌─────────────────────────────────────────────┐
+│                MAIN PROCESS                 │
+│                                             │
+│  index.ts          - app lifecycle          │
+│  windowManager.ts  - window creation/mgmt   │
+│  hotkeyManager.ts  - global keyboard hook   │
+│  ipcHandlers.ts    - IPC channel registry   │
+│                                             │
+│  managers/                                  │
+│    sessionManager.ts  - orchestration brain │
+│    apiKeyManager.ts   - config + key state  │
+│    microphoneManager.ts - mic mute state    │
+│    macPermissionsManager.ts - Accessibility │
+│                                             │
+│  services/                                  │
+│    browserService.ts    - Sally browser     │
+│    browserDomRuntime.ts - injected DOM side │
+│    geminiService.ts     - Gemini calls      │
+│    geminiNormalizers.ts - response shaping   │
+│    transcriptionService.ts - STT + recovery │
+│    ttsService.ts        - ElevenLabs TTS    │
+│    screenshotService.ts - desktop capture   │
+│    pageContext.ts       - DOM extraction    │
+│    cloudLogger.ts       - local JSON logs   │
+│    destinationResolver.ts - URL hints      │
+│                                             │
+│  utils/                                     │
+│    constants.ts  - AGENT_LOOP + defaults    │
+│    store.ts / storeRepair.ts - persistence  │
+└─────────────────────────────────────────────┘
+         │ IPC (invoke / broadcast)
+         ▼
+┌─────────────────────────────────────────────┐
+│            RENDERER PROCESSES               │
+│                                             │
+│  Config Window  - Settings UI               │
+│  Sally Bar      - Floating status pill      │
+│  Border Overlay - Active-state indicator    │
+└─────────────────────────────────────────────┘
+```
+
+### Main process responsibilities
+
+The main process owns:
+- the browser lifecycle
+- the session state machine
+- Gemini planning calls
+- TTS dispatch
+- hotkey handling
+- IPC request/response boundaries
+
+### Renderer responsibilities
+
+Renderer windows stay thin:
+- collect microphone audio
+- render settings and state
+- play back TTS audio
+- surface live feedback and previews
+
+During `awaiting_response`, the overlay renderer also owns the full-screen wait treatment: the browser blurs and dims, a centered message reads `Agent is waiting for your reply`, and an `End Agent` button cancels the whole task back to idle.
+
+That split keeps the sensitive automation and API orchestration logic in the main process.
+
+---
+
+## 10. Electron Browser Agentic Loop — DOM + Screenshot Control
+
+### Runtime model
+
+Sally no longer relies on a separately launched Playwright browser as the primary task path.
+
+Instead, `browserService` owns a persistent Electron browser window:
+- one Sally browser is reused across tasks
+- its session partition persists cookies and local storage
+- the same browser can stay logged in across app restarts
+- the initial visible page is a useful destination, not a dead blank startup tab
+
+### Why this model is stronger
+
+This browser model removes several problems that appeared in the older approach:
+- inconsistent profile locking
+- fresh-session behavior on repeated tasks
+- unreliable reuse of an external browser
+- `about:blank` startup friction
+
+### Loop structure
+
+```text
+1. Receive canonical browser instruction
+2. Resolve a starting destination when possible
+3. Open or reuse Sally browser
+4. Capture browser screenshot + page context
+5. Ask Gemini for narration + one next action
+6. Speak narration
+7. Execute action in the live DOM
+8. Verify the page changed or settled
+9. Repeat until action=null, user cancel, **`AGENT_LOOP.maxIterations` (40)** steps, **`AGENT_LOOP.maxDurationMs` (10 min)**, or **`sessionManager`** bailout narration
+```
+
+### DOM-first action strategy
+
+For actions like `click`, `fill`, `focus`, `check`, and `select`, Sally tries to target the page semantically:
+
+1. role and accessible name
+2. label or placeholder
+3. visible text match
+4. ordinal targeting with `index`
+5. focused-element keyboard fallback when appropriate
+
+This is what enables commands like:
+- `click the compose button`
+- `focus the search box`
+- `click the second result`
+- `check remember me`
+
+### Browser assistive layer
+
+The browser loop is not the only browser path. Sally also has fast direct-response helpers for:
+- `what can I do here`
+- `what buttons are on this page`
+- `what form fields are here`
+- `what links are here`
+- `what headings are here`
+- `read the errors`
+
+Those commands use the current browser snapshot without asking Gemini to plan a generic action loop first.
+
+---
+
+## 11. IPC Communication Layer
+
+Canonical channel signatures live in **`shared/types.ts`** (`IpcChannels`). Handlers are registered in **`electron/main/ipcHandlers.ts`** (preload exposes a typed bridge only; it does not whitelist channels individually).
+
+### Invokable channels (renderer → main)
+
+#### Config & keys
+
+| Channel | Purpose |
+|---------|---------|
+| `sally:get-config` | Full settings snapshot shown in the UI |
+| `sally:get-provider` / `sally:set-provider` | Provider enum (Gemini-only today) |
+| `sally:set-api-key` / `sally:test-api-key` / `sally:clear-api-key` | Legacy combined provider key path |
+| `sally:set-gemini-key` / `sally:get-gemini-key-status` | Gemini API key |
+| `sally:set-elevenlabs-key` / `sally:get-elevenlabs-key-status` | ElevenLabs API key |
+| `sally:set-auto-research-screen-questions` / `sally:get-auto-research-screen-questions` | Screen-question research toggle |
+
+#### Audio & voice session
+
+| Channel | Purpose |
+|---------|---------|
+| `sally:get-audio-device` / `sally:set-audio-device` | Preferred microphone |
+| `sally:get-mic-muted` / `sally:set-mic-muted` | Push-to-talk mute gate |
+| `sally:preview-transcription` | Live subtitle / preview transcription |
+| `sally:transcribe` | Final STT plus full session routing |
+| `sally:handle-silence` | Silence / confirmation-listen gestures |
+| `sally:send-instruction` | Composer / typed command entry |
+| `sally:cancel` | Hard-cancel current run |
+
+#### Sally browser shell (devtools-style controls used by embedded UI)
+
+| Channel | Purpose |
+|---------|---------|
+| `browser:get-state` | Tabs + loading flags |
+| `browser:new-tab` / `browser:switch-tab` / `browser:close-tab` | Tab strip operations |
+| `browser:navigate` / `browser:go-back` / `browser:go-forward` / `browser:reload` | Navigation |
+| `browser:get-snapshot` | Lightweight DOM/count snapshot for debugging |
+| `browser:execute-action` | Executes a structured `BrowserActionRequest` |
+| `browser:inspect-gmail-draft` | Gmail compose inspection helper |
+
+#### Shell windows
+
+| Channel | Purpose |
+|---------|---------|
+| `window:show-config` | Focus settings |
+| `window:show-browser` | Ensure Sally browser is launched |
+| `window:set-pill-layout` / `window:hide-pill` / `window:show-pill` | Sally Bar geometry & visibility |
+
+#### Other
+
+| Channel | Purpose |
+|---------|---------|
+| `sally:open-external` | `shell.openExternal` for safe links |
+
+#### Renderer → main (implicit, not `ipcMain.handle`)
+
+Playback completion uses **`ipcMain.on`** from the Sally Bar: **`sally:tts-playback-complete`** and **`sally:tts-playback-error`** (see `ttsService.ts`).
+
+### Broadcast channels (main → renderer)
+
+| Channel | Purpose |
+|---------|---------|
+| `sally:state-changed` | `{ state, text? }` driving the pill |
+| `sally:step` | Structured automation breadcrumbs |
+| `sally:chat` | Chat / transcript lines |
+| `sally:overlay-highlight` / `sally:overlay-clear` | Border, target rects, waiting banner |
+| `sally:auto-confirmation-listen` / `sally:auto-confirmation-stop` | Risky-action confirmation mic window |
+| `sally:tts-audio` | Base64 audio buffer `{ audioBase64, id }` |
+| `sally:tts-stop` | Stop current audio |
+| `sally:mic-muted-changed` | Mic LED state |
+| `browser:state-changed` | Mirrors `browser:get-state` for live tab UI |
+| `hotkey:start-recording` / `hotkey:stop-recording` / `hotkey:cancel-recording` | Push-to-talk bridge |
+
+IPC stays the trust boundary: renderer captures audio and paints UI; **`sessionManager`** owns routing, Gemini calls, and browser automation.
+
+---
+
+## 12. Session State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> idle
+    idle --> listening : hotkey pressed
+    listening --> processing : hotkey released
+    processing --> acting : task accepted
+    acting --> speaking : narration playing
+    speaking --> acting : next browser step
+    speaking --> idle : task complete
+    acting --> idle : task complete / cancelled / rejected
+    acting --> awaiting_response : follow-up question
+    awaiting_response --> listening : user responds
+    awaiting_response --> idle : timeout
+```
+
+### State to UI mapping
+
+| State | Sally Bar | Border Overlay | TTS |
+|-------|-----------|---------------|-----|
+| `idle` | Minimal | Hidden | - |
+| `listening` | Visible, pulse | Blue border on target display | - |
+| `processing` | Visible | Blue border | Optional immediate acknowledgement |
+| `acting` | Visible | Blue border | Step narration |
+| `speaking` | Visible | Blue border | Active playback |
+### Important state protections
+
+- each run has a generation token (`runGeneration` / `isRunCurrent`) so stale async work cannot drive the UI after cancellation or preemption
+- `speaking` is entered automatically while ElevenLabs audio is actively playing (renderer completion handshake); exiting playback restores the prior work state (`acting`, `processing`, or `awaiting_response`)
+- pressing push-to-talk during an active run preempts the old run
+- silence returns to idle cleanly
+- low-confidence transcripts never enter the acting state
+
+---
+
+## 13. Provider System — Gemini-First Architecture
+
+Sally is a Gemini-first app.
+
+| Capability | Provider |
+|------------|----------|
+| Vision + browser planning | **Gemini 2.5 Flash** |
+| Screen questions and summaries | **Gemini 2.5 Flash** |
+| Default speech-to-text | **Gemini 2.5 Flash** |
+| Text-to-speech | **ElevenLabs** |
+
+### Why Gemini-first matters
+
+The project is built for the Google Gemini Live Agent Challenge, so Gemini is not incidental. It is the central reasoning layer for:
+- screen interpretation
+- browser action planning
+- visual question answering
+- conservative command recovery for short voice navigation phrases
+
+The desktop build calls Gemini and ElevenLabs **directly** from Electron main. Prompt/response contracts stay aligned with this repository even if you later add a hosted tier.
+
+---
+
+## 14. Data Flow — Every Byte, Every Step
+
+### Audio flow
+
+```text
+Microphone -> Web Audio API -> WebM/Opus blob -> base64 audio
+    -> Gemini STT / fallback STT
+    -> structured transcription result
+```
+
+Structured result shape:
+
+```json
+{
+  "transcript": "Go to Gmail",
+  "canonicalCommand": "Go to Gmail",
+  "intent": "browse_command",
+  "confidence": "high",
+  "source": "gemini"
+}
+```
+
+### Browser planning flow
+
+```text
+Sally browser page
+    -> capturePage() screenshot
+    -> extract pageContext from DOM
+    -> Gemini planning call
+    -> narration + action JSON
+    -> ElevenLabs narration
+    -> browserService.executeAction()
+    -> settle + recapture
+```
+
+### Screen-question flow
+
+```text
+Active display screenshot or browser screenshot
+    -> Gemini screen-question call
+    -> answer text
+    -> ElevenLabs speech
+```
+
+### Agent loop guardrails
+
+Hard caps are defined once in **`electron/main/utils/constants.ts`** as **`AGENT_LOOP`** (`maxIterations`, `maxDurationMs`). `sessionManager` imports these values so docs, code, and runtime behavior stay aligned.
+
+### Persistence flow
+
+```text
+electron-store (`store.ts`, `storeRepair.ts`) -> app config
+persistent browser partition -> cookies, local storage, sessions
+```
+
+---
+
+## 15. Deployment notes
+
+This repository ships as a **desktop Electron application** targeting **macOS 11+** (`package.json` → `build.mac.minimumSystemVersion`). The main entry point **refuses to launch on Windows or Linux** so contributors are not left debugging a half-initialized shell.
+
+There is **no** bundled Google Cloud Run service: you add **Gemini** and **ElevenLabs** keys in the app and Sally calls those providers directly from the main process.
+
+---
+
+## 16. Security Architecture
+
+### API key storage
+
+API keys are stored locally through `electron-store` in the user's app data directory. Sally does not require sending those keys to any service other than the intended provider endpoints.
+
+### Store hardening
+
+The store layer invokes **`storeRepair`** before `electron-store` reads the JSON file on disk (BOM stripping, backup of corrupt files, clearer failure modes).
+
+### Screenshot privacy
+
+- screenshots are captured locally
+- they are sent only to the Gemini API from the main process
+- users control when Sally captures by speaking a command or initiating a task
+
+### Browser privacy model
+
+The Sally browser uses its own persistent Electron partition. That means:
+- Sally can preserve session state between runs
+- the session is isolated from the user's normal external browser
+- the app controls a stable, predictable automation surface
+
+---
+
+## 17. Component File Map
+
+```text
+electron/
+├── main/
+│   ├── index.ts                    # App entry point and lifecycle
+│   ├── windowManager.ts            # Config, Sally bar, overlay, display targeting
+│   ├── hotkeyManager.ts            # Global push-to-talk hotkey
+│   ├── ipcHandlers.ts              # IPC registration
+│   ├── managers/
+│   │   ├── sessionManager.ts       # Orchestration brain
+│   │   ├── apiKeyManager.ts        # Config and key state
+│   │   ├── microphoneManager.ts    # Mic mute gate
+│   │   └── macPermissionsManager.ts # Accessibility watcher + hotkey registration
+│   ├── services/
+│   │   ├── browserService.ts       # Persistent Sally browser + DOM actions
+│   │   ├── browserDomRuntime.ts    # Injected executor / DOM hooks
+│   │   ├── pageContext.ts          # Semantic page extraction
+│   │   ├── geminiService.ts        # Browser planning + screen Q&A
+│   │   ├── geminiNormalizers.ts    # Model output normalization
+│   │   ├── transcriptionService.ts # STT and command classification
+│   │   ├── ttsService.ts           # ElevenLabs speech + lifecycle hooks
+│   │   ├── screenshotService.ts    # Desktop screenshot capture
+│   │   ├── cloudLogger.ts          # Structured local logging helper
+│   │   └── destinationResolver.ts  # Intent → URL hints
+│   └── utils/
+│       ├── constants.ts            # GEMINI_MODEL, AGENT_LOOP, UI sizing
+│       ├── store.ts                # Electron Store façade
+│       └── storeRepair.ts          # Pre-read JSON repair utilities
+├── preload/
+│   └── index.ts                    # Context bridge
+src/
+├── windows/
+│   ├── config/ConfigWindow.tsx     # Settings UI
+│   ├── sallyBar/SallyBarWindow.tsx # Floating assistant bar
+│   └── borderOverlay/BorderOverlay.tsx
+shared/
+└── types.ts                        # Shared IPC and config types
+```
+
+---
+
+## 18. Hackathon Judging Alignment
+
+### Innovation & Multimodal User Experience
+
+Sally goes beyond a text box by combining:
+- push-to-talk voice control
+- screenshot-based visual reasoning
+- live DOM-aware interaction
+- spoken narration of every major step
+
+### Technical Implementation & Agent Architecture
+
+Sally now uses a stronger hybrid model:
+- Gemini sees the screenshot
+- DOM/page context grounds the action choice
+- the browser executes DOM-first actions directly in the live page
+
+That is a better fit for the UI Navigator brief than either screenshot-only clicking or a generic chat assistant.
+
+### Demo & Presentation
+
+The architecture now supports stronger demo moments:
+1. `what am I looking at`
+2. `go to Gmail`
+3. `click the compose button`
+4. `what can I do here`
+5. interruption and retry without relaunching a new browser
+
+---
+
+## 19. Sequence Diagrams — Real Scenarios
+
+### Scenario 1: "What am I looking at?"
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant SES as Session Manager
+    participant SCR as Screenshot Service
+    participant GEM as Gemini Vision
+    participant TTS as TTS Service
+
+    User->>SES: "What am I looking at?"
+    SES->>SCR: capture active display
+    SCR-->>SES: base64 PNG
+    SES->>GEM: answer screen question
+    GEM-->>SES: spoken answer
+    SES->>TTS: speak(answer)
+    TTS->>User: "You appear to be looking at..."
+```
+
+### Scenario 2: "Go to Gmail and click the compose button"
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant SES as Session Manager
+    participant BRS as Browser Service
+    participant GEM as Gemini Vision
+    participant TTS as TTS Service
+
+    User->>SES: "Go to Gmail and click the compose button"
+    SES->>BRS: openOrReuseBrowser("https://mail.google.com")
+    BRS-->>SES: browser ready
+
+    Note over SES: Iteration 1
+    SES->>BRS: captureSnapshot()
+    BRS-->>SES: screenshot + pageContext
+    SES->>GEM: interpretScreen(snapshot, instruction)
+    GEM-->>SES: {narration, action}
+    SES->>TTS: speak(narration)
+    SES->>BRS: executeAction(action)
+
+    Note over SES: Iteration 2
+    SES->>BRS: captureSnapshot()
+    BRS-->>SES: refreshed screenshot + pageContext
+    SES->>GEM: interpretScreen(snapshot, instruction)
+    GEM-->>SES: {narration, action:null}
+    SES->>TTS: speak(narration)
+    SES->>SES: task complete
+```
+
+### Scenario 3: "What can I do here?"
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant SES as Session Manager
+    participant BRS as Browser Service
+    participant TTS as TTS Service
+
+    User->>SES: "What can I do here?"
+    SES->>BRS: captureSnapshot()
+    BRS-->>SES: pageContext
+    SES->>SES: summarize actions from visible controls
+    SES->>TTS: speak(summary)
+    TTS->>User: "I can see buttons for..."
+```
+
+---
+
+## 20. Error Handling & Fallback Paths
+
+```mermaid
+graph TD
+    A[User speaks command] --> B{Audio clear enough?}
+    B -->|No| C[No-op or retry prompt]
+    B -->|Yes| D[Structured STT result]
+
+    D --> E{Intent confidence high?}
+    E -->|No| C
+    E -->|Yes| F{Screen-only or browser?}
+
+    F -->|Screen-only| G[Capture screenshot]
+    G --> H[Gemini answer]
+
+    F -->|Browser| I[Open or reuse Sally browser]
+    I --> J[Capture screenshot + page context]
+    J --> K[Gemini planning]
+    K --> L{Action returned?}
+    L -->|No| M[Task complete]
+    L -->|Yes| N[Execute DOM-first action]
+    N --> O{Visible state changed?}
+    O -->|Yes| J
+    O -->|No| P[Retry / adapt / narrate failure]
+```
+
+### Fallback tiers
+
+| Scenario | Fallback |
+|----------|----------|
+| Missing / invalid Gemini API key | User-facing prompt to open Settings (no silent degradation) |
+| Gemini STT weak audio | Command retry prompt or no-op |
+| Browser action target not found | Retry using different semantic match or ordinal context |
+| No visible state change | Gemini replans on the fresh snapshot |
+| User interrupts mid-task | Old run invalidated, new run starts |
+| Task exceeds iteration/time limit | Stop with timeout narration |
+
+---
+
+## 21. macOS Integration
+
+Sally treats macOS as a first-class runtime, not a generic Electron host. The integration is centralised in three files:
+
+- `electron/main/index.ts` — the macOS-only startup gate.
+- `electron/main/macIntegration.ts` — application menu, About panel, dock menu, and the `Cmd+Shift+Space` global shortcut.
+- `electron/main/managers/macPermissionsManager.ts` — live permission tracker for Microphone, Screen Recording, and Accessibility.
+
+### macOS-only startup gate
+
+```ts
+if (process.platform !== 'darwin') {
+  dialog.showErrorBox(
+    'Sally is macOS only',
+    'Sally requires macOS 11 or later. Please run this app on an Apple Silicon or Intel Mac.',
+  );
+  app.quit();
+  process.exit(1);
+}
+```
+
+`scripts/desktop-doctor.ts` performs the same check at install time so contributors discover the constraint before a failed boot.
+
+### Native windowing
+
+| Window | macOS-specific config |
+|--------|------------------------|
+| Settings (`config`) | `titleBarStyle: 'hiddenInset'`, traffic lights at `(16, 16)`, `roundedCorners: true` |
+| Sally Bar (floating pill) | `frame: false`, `transparent: true`, `setAlwaysOnTop(true, 'screen-saver')`, `setVisibleOnAllWorkspaces({ visibleOnFullScreen: true })`, `setContentProtection(true)` (NSWindowSharingNone), traffic-light buttons hidden |
+| Border overlay | always-on-top at `screen-saver` level, `setContentProtection(true)` so the "agent is working" border never appears in screen recordings |
+| Sally Browser | `titleBarStyle: 'hiddenInset'`, traffic lights at `(14, 16)`, `roundedCorners: true` |
+
+The renderer uses the system font stack (`-apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui`) so text inherits SF Pro and macOS' standard font smoothing.
+
+### App / Edit / View / Window menu and dock menu
+
+`installMacIntegration()` (called once from `app.whenReady`) builds:
+
+- A standard macOS application menu so `Cmd-Q`, `Cmd-,`, `Cmd-X/V`, hide-others, etc. work as a Mac user expects.
+- An About panel populated from `package.json` (`app.setAboutPanelOptions`).
+- A dock right-click menu with **Show Sally Bar**, **Open Settings**, **Open Sally Browser**, and **Mute / Unmute Microphone**. The mute label refreshes automatically (`refreshMacDockMenu()`) whenever the microphone state changes.
+- A global `Cmd+Shift+Space` shortcut that brings the floating bar back to the front, even when Sally is not the focused application.
+
+### Permissions UX
+
+`macPermissionsManager` is the single source of truth for the three macOS permissions Sally needs. It:
+
+- Reads live status via `systemPreferences.getMediaAccessStatus('microphone' | 'screen')` and `systemPreferences.isTrustedAccessibilityClient(false)`.
+- Polls every 5 seconds so the renderer can react to permissions toggled outside the app without a relaunch.
+- Broadcasts `permissions:status-changed` over IPC; the Settings UI subscribes and updates the **macOS Permissions** card immediately.
+- Calls `systemPreferences.askForMediaAccess('microphone')` and `isTrustedAccessibilityClient(true)` for the only first-party prompts macOS allows from a non-signed app.
+- Opens deep-links into the right System Settings pane (`x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone | Privacy_ScreenCapture | Privacy_Accessibility`) for the cases where the system refuses to prompt.
+- Auto-registers the `uiohook-napi` push-to-talk hotkey via the registrar passed from `electron/main/index.ts` the moment Accessibility flips to `granted`. No restart required.
+
+```mermaid
+flowchart LR
+    boot[app.whenReady] --> integ[installMacIntegration]
+    boot --> perm[macPermissionsManager.start]
+    perm --> poll{poll every 5s}
+    poll -- changed --> bcast[broadcast permissions:status-changed]
+    bcast --> ui[ConfigWindow Permissions card]
+    poll -- accessibility just granted --> hook[hotkeyManager.register]
+    integ --> menu[App + Dock menu]
+    integ --> short[Cmd+Shift+Space]
+```
+
+### Power-save guard during agentic runs
+
+`electron/main/utils/powerGuard.ts` wraps `powerSaveBlocker.start('prevent-display-sleep')` and is engaged from `sessionManager.setState` whenever Sally enters `acting`, `awaiting_response`, or `speaking`, then released the moment the session returns to `idle`. This keeps `desktopCapturer` and the Sally browser usable for long agentic tasks without requiring the user to nudge the trackpad.
+
+### Open at login
+
+The Settings UI exposes an `Open Sally at login` toggle that persists to `apiKeyManager.getOpenAtLogin()` and is reflected to macOS through `app.setLoginItemSettings({ openAtLogin })` both at startup and whenever the user toggles it.
+
+---
+
+## Summary
+
+Sally is now a three-layer UI navigator:
+
+1. **Perception Layer** — Gemini 2.5 Flash sees the screenshot
+2. **Grounding Layer** — DOM and page context make targeting more precise
+3. **Action Layer** — the Electron-owned Sally browser executes the next step directly in the live page
+
+That architecture is closer to the spirit of the UI Navigator track than the earlier browser-launching model. Sally still sees, understands, and speaks, but it now controls a stable browser surface it owns, remembers, and can navigate more deeply over time.

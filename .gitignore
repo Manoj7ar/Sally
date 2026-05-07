@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-electron
+.DS_Store
+.env
+.env.local
+.env*.local
+.claude/
+*.dmg
+*.AppImage
+*.exe
