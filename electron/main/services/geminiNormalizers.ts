@@ -54,9 +54,10 @@ function normalizeActionCandidate(candidate: Record<string, unknown>): BrowserAc
 }
 
 export function normalizeInterpretResult(raw: Record<string, unknown>): GeminiInterpretResult {
-  const narration = typeof raw.narration === 'string' && raw.narration
-    ? raw.narration
-    : 'I can see the screen.';
+  if (typeof raw.narration !== 'string' || !raw.narration.trim()) {
+    throw new Error('Gemini response missing or empty narration');
+  }
+  const narration = raw.narration.trim();
 
   let action: GeminiAction | null = null;
   if (raw.action && typeof raw.action === 'object' && !Array.isArray(raw.action)) {
@@ -67,9 +68,10 @@ export function normalizeInterpretResult(raw: Record<string, unknown>): GeminiIn
 }
 
 export function normalizeScreenQuestionResult(raw: Record<string, unknown>): GeminiScreenQuestionResult {
-  const answer = typeof raw.answer === 'string' && raw.answer.trim()
-    ? raw.answer.trim()
-    : "I can see the screen, but I couldn't answer that clearly from the image.";
+  if (typeof raw.answer !== 'string' || !raw.answer.trim()) {
+    throw new Error('Gemini response missing or empty answer');
+  }
+  const answer = raw.answer.trim();
 
   const researchQuery = typeof raw.researchQuery === 'string' && raw.researchQuery.trim()
     ? raw.researchQuery.trim()
@@ -83,9 +85,10 @@ export function normalizeScreenQuestionResult(raw: Record<string, unknown>): Gem
 }
 
 export function normalizeBrowserRescueAnalysis(raw: Record<string, unknown>): GeminiBrowserRescueAnalysis {
-  const pageSummary = typeof raw.pageSummary === 'string' && raw.pageSummary.trim()
-    ? raw.pageSummary.trim()
-    : 'I can inspect this page and help with the next step.';
+  if (typeof raw.pageSummary !== 'string' || !raw.pageSummary.trim()) {
+    throw new Error('Gemini response missing or empty pageSummary');
+  }
+  const pageSummary = raw.pageSummary.trim();
 
   const blockers: GeminiBrowserRescueBlocker[] = Array.isArray(raw.blockers)
     ? raw.blockers
@@ -135,7 +138,7 @@ export function normalizeBrowserRescueAnalysis(raw: Record<string, unknown>): Ge
         let action: GeminiAction | null = null;
 
         if (candidate.action && typeof candidate.action === 'object' && !Array.isArray(candidate.action)) {
-          const normalizedAction = normalizeInterpretResult({ narration: '', action: candidate.action }).action;
+          const normalizedAction = normalizeActionCandidate(candidate.action as Record<string, unknown>);
           action = normalizedAction?.type === 'null' ? null : normalizedAction;
         }
 
@@ -190,11 +193,28 @@ export function normalizeBrowserAssistiveIntent(value: unknown): GeminiBrowserAs
   }
 }
 
+const USER_REQUEST_INTENTS: GeminiUserRequestIntent[] = [
+  'browser_task',
+  'browser_assistive',
+  'browser_rescue',
+  'describe_screen',
+  'summarize_screen',
+  'screen_question',
+  'smart_home',
+  'chat',
+  'cancel',
+  'clarify',
+  'none',
+];
+
 export function normalizeUserRequestInterpretation(
   raw: Record<string, unknown>,
   transcript: string,
 ): GeminiUserRequestInterpretation {
-  const intent = normalizeUserRequestIntent(raw.intent);
+  if (typeof raw.intent !== 'string' || !USER_REQUEST_INTENTS.includes(raw.intent as GeminiUserRequestIntent)) {
+    throw new Error(`Gemini response invalid or missing intent: ${String(raw.intent)}`);
+  }
+  const intent = raw.intent as GeminiUserRequestIntent;
   const confidence = raw.confidence === 'high' || raw.confidence === 'medium' ? raw.confidence : 'low';
   const normalizedInstruction = typeof raw.normalizedInstruction === 'string' && raw.normalizedInstruction.trim()
     ? raw.normalizedInstruction.trim()
@@ -217,29 +237,32 @@ export function normalizeUserRequestInterpretation(
   };
 }
 
-export function normalizeTaskPlan(raw: Record<string, unknown>, goal: string): GeminiTaskPlan {
+export function normalizeTaskPlan(raw: Record<string, unknown>): GeminiTaskPlan {
   const status = raw.status === 'complete' || raw.status === 'blocked' || raw.status === 'clarify'
     ? raw.status
     : 'continue';
-  const planSummary = typeof raw.planSummary === 'string' && raw.planSummary.trim()
-    ? raw.planSummary.trim()
-    : goal;
+  if (typeof raw.planSummary !== 'string' || !raw.planSummary.trim()) {
+    throw new Error('Gemini response missing or empty planSummary');
+  }
+  const planSummary = raw.planSummary.trim();
   const activeSubtask = typeof raw.activeSubtask === 'string' && raw.activeSubtask.trim()
     ? raw.activeSubtask.trim()
     : null;
 
-  const subtasks: GeminiTaskSubtask[] = Array.isArray(raw.subtasks)
-    ? raw.subtasks
-      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
-      .slice(0, 6)
-      .map((item, index) => ({
-        id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `s${index + 1}`,
-        title: typeof item.title === 'string' && item.title.trim() ? item.title.trim() : `Step ${index + 1}`,
-        status: item.status === 'done' || item.status === 'blocked' || item.status === 'active'
-          ? item.status
-          : 'pending',
-      }))
-    : [];
+  if (!Array.isArray(raw.subtasks) || raw.subtasks.length === 0) {
+    throw new Error('Gemini response missing or empty subtasks');
+  }
+
+  const subtasks: GeminiTaskSubtask[] = raw.subtasks
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+    .slice(0, 6)
+    .map((item, index) => ({
+      id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `s${index + 1}`,
+      title: typeof item.title === 'string' && item.title.trim() ? item.title.trim() : `Step ${index + 1}`,
+      status: item.status === 'done' || item.status === 'blocked' || item.status === 'active'
+        ? item.status
+        : 'pending',
+    }));
 
   const rememberedFacts = Array.isArray(raw.rememberedFacts)
     ? raw.rememberedFacts
@@ -258,21 +281,11 @@ export function normalizeTaskPlan(raw: Record<string, unknown>, goal: string): G
     ? raw.blockedReason.trim()
     : null;
 
-  const normalizedSubtasks: GeminiTaskSubtask[] = subtasks.length > 0
-    ? subtasks
-    : [
-        {
-          id: 's1',
-          title: activeSubtask || goal,
-          status: status === 'complete' ? 'done' : 'active',
-        },
-      ];
-
   return {
     status,
     planSummary,
-    activeSubtask: activeSubtask || normalizedSubtasks.find((item) => item.status === 'active')?.title || normalizedSubtasks.find((item) => item.status === 'pending')?.title || null,
-    subtasks: normalizedSubtasks,
+    activeSubtask: activeSubtask || subtasks.find((item) => item.status === 'active')?.title || subtasks.find((item) => item.status === 'pending')?.title || null,
+    subtasks,
     rememberedFacts,
     clarificationQuestion,
     completionNarration,
@@ -280,17 +293,16 @@ export function normalizeTaskPlan(raw: Record<string, unknown>, goal: string): G
   };
 }
 
-export function normalizeEmailDraft(raw: Record<string, unknown>, brief: string): GeminiEmailDraft {
-  const subject = typeof raw.subject === 'string' && raw.subject.trim()
-    ? raw.subject.trim()
-    : 'Quick follow-up';
-  const fallbackBody = `Hi,\n\n${brief.trim() || 'I wanted to follow up with you.'}\n\nBest,\nManoj`;
-  const body = typeof raw.body === 'string' && raw.body.trim()
-    ? raw.body.trim()
-    : fallbackBody;
+export function normalizeEmailDraft(raw: Record<string, unknown>): GeminiEmailDraft {
+  if (typeof raw.subject !== 'string' || !raw.subject.trim()) {
+    throw new Error('Gemini response missing or empty email subject');
+  }
+  if (typeof raw.body !== 'string' || !raw.body.trim()) {
+    throw new Error('Gemini response missing or empty email body');
+  }
 
   return {
-    subject,
-    body,
+    subject: raw.subject.trim(),
+    body: raw.body.trim(),
   };
 }
