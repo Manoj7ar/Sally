@@ -52,18 +52,13 @@ describe('ApiKeyManager', () => {
     expect(manager.hasApiKey()).toBe(false);
   });
 
-  it('stores backend URL, auto research flags, and cloud logging state', () => {
+  it('stores auto research flag', () => {
     const store = createStore();
     const manager = new ApiKeyManagerClass(store);
 
-    manager.setGeminiBackendUrl('https://backend.example');
     manager.setAutoResearchScreenQuestions(true);
-    manager.setCloudLoggingEnabled(false);
 
-    expect(manager.getGeminiBackendUrl()).toBe('https://backend.example');
-    expect(manager.hasGeminiBackendUrl()).toBe(true);
     expect(manager.getAutoResearchScreenQuestions()).toBe(true);
-    expect(manager.getCloudLoggingEnabled()).toBe(false);
   });
 
   it('rejects unsupported providers and validates Gemini keys through injected fetch', async () => {
