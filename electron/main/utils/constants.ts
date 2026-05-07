@@ -31,6 +31,12 @@ export const SALLY_BAR = {
   topOffset: 16,
 };
 
+/** Safety limits for the Gemini + browser agentic loop (single source of truth for runtime and docs). */
+export const AGENT_LOOP = {
+  maxIterations: 40,
+  maxDurationMs: 10 * 60 * 1000,
+} as const;
+
 export const STORE_KEYS = {
   WINDOW_STATE: 'windowState',
   AUDIO_DEVICE: 'audioDevice',
@@ -39,7 +45,6 @@ export const STORE_KEYS = {
   SOUND_EFFECTS_ENABLED: 'soundEffectsEnabled',
   MIC_MUTED: 'micMuted',
   GEMINI_API_KEY: 'geminiApiKey',
-  GEMINI_BACKEND_URL: 'geminiBackendUrl',
   AUTO_RESEARCH_SCREEN_QUESTIONS: 'autoResearchScreenQuestions',
-  CLOUD_LOGGING_ENABLED: 'cloudLoggingEnabled',
+  OPEN_AT_LOGIN: 'openAtLogin',
 } as const;
