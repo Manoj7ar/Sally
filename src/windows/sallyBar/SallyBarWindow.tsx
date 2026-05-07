@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ipc } from '../../lib/ipc';
+import { getPushToTalkKeyLabel } from '../../lib/desktopMeta';
 import { rendererLogger } from '../../lib/logger';
 import { THEME } from '../../theme/tokens';
 import WaveformView from './components/WaveformView';
@@ -83,7 +84,7 @@ const VOICE_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
 };
 
 export default function SallyBarWindow() {
-  const pushToTalkKeyLabel = ipc.getPlatform() === 'darwin' ? 'Right Option' : 'Right Alt';
+  const pushToTalkKeyLabel = getPushToTalkKeyLabel();
   const [state, setState] = useState<SallyState>('idle');
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
