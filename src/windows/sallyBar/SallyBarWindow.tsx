@@ -84,7 +84,7 @@ const VOICE_CAPTURE_CONSTRAINTS: MediaTrackConstraints = {
 };
 
 export default function SallyBarWindow() {
-  const pushToTalkKeyLabel = getPushToTalkKeyLabel();
+  const [pushToTalkKeyLabel, setPushToTalkKeyLabel] = useState<string>(getPushToTalkKeyLabel());
   const [state, setState] = useState<SallyState>('idle');
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -218,10 +218,23 @@ export default function SallyBarWindow() {
       ipc.subscribe('sally:mic-muted-changed', (data) => {
         setIsMicMuted(data.muted);
       }),
+      ipc.subscribe('sally:hotkey-changed', (binding) => {
+        if (binding && typeof binding.label === 'string' && binding.label.length > 0) {
+          setPushToTalkKeyLabel(binding.label);
+        }
+      }),
     ];
 
     void ipc.invoke('sally:get-mic-muted').then((muted) => {
       setIsMicMuted(muted);
+    });
+
+    void ipc.invoke('sally:get-hotkey').then((binding) => {
+      if (binding && typeof binding.label === 'string' && binding.label.length > 0) {
+        setPushToTalkKeyLabel(binding.label);
+      }
+    }).catch(() => {
+      /* ignore — fall back to static label */
     });
 
     return () => unsubs.forEach((u) => u());

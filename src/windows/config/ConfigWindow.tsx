@@ -1,9 +1,16 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ipc } from '../../lib/ipc';
 import { getPushToTalkKeyLabel } from '../../lib/desktopMeta';
 import { rendererLogger } from '../../lib/logger';
 import { THEME } from '../../theme/tokens';
-import type { MacPermissionPane, MacPermissionState, MacPermissionsStatus, SallyConfig } from '../../../shared/types';
+import type {
+  MacPermissionPane,
+  MacPermissionState,
+  MacPermissionsStatus,
+  PushToTalkBinding,
+  PushToTalkCaptureProgress,
+  SallyConfig,
+} from '../../../shared/types';
 
 // ── Reusable Components ──
 
@@ -285,6 +292,12 @@ export default function ConfigWindow() {
   const [openAtLogin, setOpenAtLogin] = useState(false);
   const [testResult, setTestResult] = useState<boolean | null>(null);
   const [testing, setTesting] = useState(false);
+  const [hotkeyBinding, setHotkeyBinding] = useState<PushToTalkBinding | null>(null);
+  const [hotkeyCapture, setHotkeyCapture] = useState<PushToTalkCaptureProgress | null>(null);
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  const isCapturingHotkey = hotkeyCapture !== null;
+  const isCapturingRef = useRef(isCapturingHotkey);
+  useEffect(() => { isCapturingRef.current = isCapturingHotkey; }, [isCapturingHotkey]);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -292,6 +305,7 @@ export default function ConfigWindow() {
       setConfig(cfg);
       setAutoResearchScreenQuestions(cfg.autoResearchScreenQuestions);
       setOpenAtLogin(cfg.openAtLogin);
+      setHotkeyBinding(cfg.pushToTalk);
     } catch (e) {
       rendererLogger.error('Failed to load config:', e);
     }
@@ -316,6 +330,65 @@ export default function ConfigWindow() {
       setPermissions(status);
     });
   }, []);
+
+  useEffect(() => {
+    const unsubs = [
+      ipc.subscribe('sally:hotkey-changed', (binding) => {
+        setHotkeyBinding(binding);
+        setConfig((prev) => (prev ? { ...prev, pushToTalk: binding } : prev));
+        setHotkeyError(null);
+      }),
+      ipc.subscribe('sally:hotkey-capture-progress', (progress) => {
+        if (!isCapturingRef.current) return;
+        setHotkeyCapture(progress);
+      }),
+      ipc.subscribe('sally:hotkey-capture-ended', (ended) => {
+        setHotkeyCapture(null);
+        if (!ended.saved) {
+          if (ended.reason === 'timeout') {
+            setHotkeyError('Capture timed out — try again.');
+          } else if (ended.reason === 'no-keys') {
+            setHotkeyError('No keys were pressed. Try again and hold your shortcut.');
+          } else {
+            setHotkeyError(null);
+          }
+        } else {
+          setHotkeyError(null);
+        }
+      }),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, []);
+
+  const handleStartHotkeyCapture = async () => {
+    setHotkeyError(null);
+    try {
+      const initial = await ipc.invoke('sally:start-hotkey-capture');
+      setHotkeyCapture(initial);
+    } catch (e) {
+      rendererLogger.error('Failed to start hotkey capture:', e);
+      setHotkeyError('Could not start capture. Make sure Accessibility permission is granted.');
+    }
+  };
+
+  const handleCancelHotkeyCapture = async () => {
+    try {
+      await ipc.invoke('sally:cancel-hotkey-capture');
+    } catch (e) {
+      rendererLogger.error('Failed to cancel hotkey capture:', e);
+    }
+    setHotkeyCapture(null);
+  };
+
+  const handleResetHotkey = async () => {
+    try {
+      const binding = await ipc.invoke('sally:reset-hotkey');
+      setHotkeyBinding(binding);
+      setHotkeyError(null);
+    } catch (e) {
+      rendererLogger.error('Failed to reset hotkey:', e);
+    }
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.electron) return;
@@ -390,7 +463,7 @@ export default function ConfigWindow() {
     );
   }
 
-  const pushToTalkKeyLabel = getPushToTalkKeyLabel();
+  const pushToTalkKeyLabel = hotkeyBinding?.label ?? getPushToTalkKeyLabel();
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: THEME.surface.base, color: THEME.text.primary }}>
@@ -565,6 +638,84 @@ export default function ConfigWindow() {
               </div>
             </button>
           </div>
+        </Card>
+
+        {/* Push-to-talk Shortcut */}
+        <Card>
+          <CardHeader
+            title="Push-to-talk Shortcut"
+            description="Hold this key (or combination of keys) anywhere on your Mac to talk to Sally."
+            indicator={config.pushToTalkHotkeyActive ? 'green' : 'gray'}
+          />
+
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '14px 16px',
+              borderRadius: 12,
+              border: `1px solid ${isCapturingHotkey ? THEME.accent.primaryBorder : THEME.border.subtle}`,
+              background: isCapturingHotkey ? THEME.accent.primarySoft : THEME.surface.base,
+              marginBottom: 12,
+              transition: 'background 0.15s, border-color 0.15s',
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: THEME.text.secondary, marginBottom: 4, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                {isCapturingHotkey ? 'Press your shortcut' : 'Current shortcut'}
+              </div>
+              <div
+                style={{
+                  fontSize: 16,
+                  fontWeight: 600,
+                  color: isCapturingHotkey
+                    ? (hotkeyCapture && hotkeyCapture.keycodes.length > 0 ? THEME.accent.primary : THEME.text.secondary)
+                    : THEME.text.primary,
+                  fontFamily: 'monospace',
+                  letterSpacing: '0.02em',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {isCapturingHotkey
+                  ? (hotkeyCapture?.label ?? 'Press your shortcut…')
+                  : (hotkeyBinding?.label ?? 'Right Option')}
+              </div>
+              <div style={{ fontSize: 12, color: THEME.text.secondary, marginTop: 4 }}>
+                {isCapturingHotkey
+                  ? 'Hold the keys you want, then release them to save automatically.'
+                  : config.pushToTalkHotkeyActive
+                    ? 'The shortcut works system-wide while Sally is running.'
+                    : 'Grant Accessibility above to activate the shortcut.'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+              {isCapturingHotkey ? (
+                <SecondaryButton onClick={handleCancelHotkeyCapture}>Cancel</SecondaryButton>
+              ) : (
+                <PrimaryButton
+                  onClick={handleStartHotkeyCapture}
+                  disabled={!config.pushToTalkHotkeyActive}
+                >
+                  Change shortcut
+                </PrimaryButton>
+              )}
+              {!isCapturingHotkey && hotkeyBinding && hotkeyBinding.keycodes.length > 0 && (
+                <SecondaryButton onClick={handleResetHotkey}>Reset to default</SecondaryButton>
+              )}
+            </div>
+          </div>
+
+          {hotkeyError && (
+            <div style={{ fontSize: 12, color: THEME.status.danger, marginTop: 4 }}>{hotkeyError}</div>
+          )}
+          {!config.pushToTalkHotkeyActive && (
+            <div style={{ fontSize: 12, color: THEME.text.secondary, marginTop: 4 }}>
+              Sally needs the Accessibility permission above before it can listen for global shortcuts.
+            </div>
+          )}
         </Card>
 
         {/* AI Model */}

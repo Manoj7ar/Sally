@@ -27,6 +27,7 @@ export function registerIpcHandlers(): void {
       openAtLogin: apiKeyManager.getOpenAtLogin(),
       accessibilityTrusted,
       pushToTalkHotkeyActive: hotkeyManager.isRegistered(),
+      pushToTalk: hotkeyManager.getBinding(),
     };
   });
 
@@ -77,6 +78,26 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('sally:set-open-at-login', (_e, enabled: boolean) => {
     apiKeyManager.setOpenAtLogin(enabled);
     app.setLoginItemSettings({ openAtLogin: enabled });
+  });
+
+  // ── Push-to-talk shortcut ──
+
+  ipcMain.handle('sally:get-hotkey', () => {
+    return hotkeyManager.getBinding();
+  });
+
+  ipcMain.handle('sally:start-hotkey-capture', () => {
+    return hotkeyManager.startCapture();
+  });
+
+  ipcMain.handle('sally:cancel-hotkey-capture', () => {
+    return hotkeyManager.cancelCapture();
+  });
+
+  ipcMain.handle('sally:reset-hotkey', () => {
+    const binding = hotkeyManager.resetBindingToDefault();
+    windowManager.broadcastToAll('sally:hotkey-changed', binding);
+    return binding;
   });
 
   // ── macOS Permissions ──

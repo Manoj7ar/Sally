@@ -19,6 +19,7 @@ interface StoreSchema {
   [STORE_KEYS.GEMINI_API_KEY]: string;
   [STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS]: boolean;
   [STORE_KEYS.OPEN_AT_LOGIN]: boolean;
+  [STORE_KEYS.PUSH_TO_TALK_KEYCODES]: number[];
 }
 
 const defaultValues: StoreSchema = {
@@ -31,6 +32,9 @@ const defaultValues: StoreSchema = {
   [STORE_KEYS.GEMINI_API_KEY]: '',
   [STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS]: false,
   [STORE_KEYS.OPEN_AT_LOGIN]: false,
+  // Filled in lazily by hotkeyManager when uIOhook is loaded so this module
+  // stays free of native bindings (keeps tests happy on non-mac runners).
+  [STORE_KEYS.PUSH_TO_TALK_KEYCODES]: [],
 };
 
 function getStoreFilePath(): string | null {
