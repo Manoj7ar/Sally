@@ -63,3 +63,66 @@ This means Sally can handle multi-step tasks like "go to Gmail and open compose"
 6. **Sally speaks** — ElevenLabs neural TTS narrates every action and result
 7. **Loop continues** — Take a new screenshot, ask Gemini again, until the task is done
 
+## Architecture
+
+```mermaid
+graph TD
+    A[Right Option + Microphone] -->|push-to-talk| B[Audio Recorder]
+    B -->|WebM audio| C[Gemini 2.5 Flash STT]
+    C --> D{Command Router}
+    D --> MAIN[Electron Main Process]
+
+    D -->|describe| E[Desktop Screenshot]
+    D -->|screen question| E
+    D -->|action| SB
+    D -->|smart home| EXPAND[Expand Command] --> SB
+
+    E --> GEMINI[Gemini 2.5 Flash Vision]
+    SB[Sally Browser] --> SHOT[Browser Screenshot]
+    SB --> CTX[DOM + Page Context]
+    SHOT --> GEMINI
+    CTX --> GEMINI
+
+    GEMINI --> TTS[ElevenLabs TTS → Speaker]
+    GEMINI --> CHECK{Action?}
+    CHECK -->|No — task done| IDLE[Back to Idle]
+    CHECK -->|Yes| EXEC[Sally Browser: Execute DOM-first Action]
+    EXEC --> SB
+
+    MAIN --> LOG[Local structured logs]
+```
+
+Want the full system walkthrough? See [docs/architecture.md](./docs/architecture.md) for the detailed architecture, data flow, and implementation notes.
+
+## AI configuration
+
+| Piece | What you use |
+|-------|----------------|
+| **Vision, planning, STT** | Your **Gemini API key** in Settings (same Google AI Studio key for multimodal and speech-to-text) |
+| **TTS** | Your **ElevenLabs** API key in Settings |
+| **SDK** | `@google/genai` in the Electron main process — calls Google's Gemini API directly |
+
+Example structured response from Gemini for a browser step:
+
+```json
+{
+  "narration": "I see Gmail with the Compose button on the left.",
+  "action": { "type": "click", "selector": "Compose" }
+}
+```
+
+Structured activity logs are written **locally** (main process logger) only.
+
+## Features
+
+- **Gemini-powered screen understanding** — "What do I see?" uses Gemini 2.5 Flash multimodal vision
+- **Voice-first interaction** — Push-to-talk with Gemini STT, every response spoken via TTS
+- **Agentic browser automation** — Gemini Vision + DOM-guided browser control in a loop: screenshot → think → act → repeat
+- **Persistent Sally browser** — Electron-owned browser session with cookies and login state preserved between launches
+- **Real-time narration** — Every action Sally takes is narrated aloud so the user always knows what's happening
+- **Structured page grounding** — Gemini sees both the live screenshot and visible page context such as buttons, fields, headings, dialogs, and messages
+- **Assistive browser commands** — "What can I do here?", "What buttons are here?", "Read the errors", and similar commands answer directly from the live page
+- **Multi-step task completion** — Handles complex tasks autonomously across multiple pages
+- **Floating assistant bar** — Minimal, non-intrusive UI with live state feedback
+- **Configurable settings** — Manage Gemini, ElevenLabs, and screen-question behavior from the settings window
+
