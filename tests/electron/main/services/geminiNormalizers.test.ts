@@ -31,19 +31,14 @@ describe('geminiNormalizers', () => {
     });
   });
 
-  it('drops invalid browser actions instead of returning an unsafe action', () => {
-    const result = normalizeInterpretResult({
+  it('throws when narration is missing or empty', () => {
+    expect(() => normalizeInterpretResult({
       narration: '',
       action: {
-        type: 'submit_form',
+        type: 'click',
         selector: '#send',
       },
-    });
-
-    expect(result).toEqual({
-      narration: 'I can see the screen.',
-      action: null,
-    });
+    })).toThrow('missing or empty narration');
   });
 
   it('requires a non-empty research query before enabling screen research', () => {
@@ -91,24 +86,22 @@ describe('geminiNormalizers', () => {
     });
   });
 
-  it('creates a fallback task plan when the model returns no subtasks', () => {
-    const result = normalizeTaskPlan({}, 'Open Gmail and draft the email');
+  it('throws when task plan is missing required fields', () => {
+    expect(() => normalizeTaskPlan({})).toThrow('planSummary');
+    expect(() => normalizeTaskPlan({ planSummary: 'Do the thing', subtasks: [] })).toThrow('subtasks');
+  });
 
-    expect(result).toEqual({
+  it('normalizes a complete task plan', () => {
+    const result = normalizeTaskPlan({
       status: 'continue',
-      planSummary: 'Open Gmail and draft the email',
-      activeSubtask: 'Open Gmail and draft the email',
-      subtasks: [
-        {
-          id: 's1',
-          title: 'Open Gmail and draft the email',
-          status: 'active',
-        },
-      ],
+      planSummary: 'Open Gmail',
+      activeSubtask: 'Open inbox',
+      subtasks: [{ id: 'a', title: 'Open inbox', status: 'active' }],
       rememberedFacts: [],
-      clarificationQuestion: null,
-      completionNarration: null,
-      blockedReason: null,
     });
+
+    expect(result.planSummary).toBe('Open Gmail');
+    expect(result.subtasks).toHaveLength(1);
+    expect(result.subtasks[0]?.title).toBe('Open inbox');
   });
 });
