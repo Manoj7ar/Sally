@@ -17,9 +17,8 @@ interface StoreSchema {
   [STORE_KEYS.SOUND_EFFECTS_ENABLED]: boolean;
   [STORE_KEYS.MIC_MUTED]: boolean;
   [STORE_KEYS.GEMINI_API_KEY]: string;
-  [STORE_KEYS.GEMINI_BACKEND_URL]: string;
   [STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS]: boolean;
-  [STORE_KEYS.CLOUD_LOGGING_ENABLED]: boolean;
+  [STORE_KEYS.OPEN_AT_LOGIN]: boolean;
 }
 
 const defaultValues: StoreSchema = {
@@ -30,9 +29,8 @@ const defaultValues: StoreSchema = {
   [STORE_KEYS.SOUND_EFFECTS_ENABLED]: true,
   [STORE_KEYS.MIC_MUTED]: false,
   [STORE_KEYS.GEMINI_API_KEY]: '',
-  [STORE_KEYS.GEMINI_BACKEND_URL]: '',
   [STORE_KEYS.AUTO_RESEARCH_SCREEN_QUESTIONS]: false,
-  [STORE_KEYS.CLOUD_LOGGING_ENABLED]: true,
+  [STORE_KEYS.OPEN_AT_LOGIN]: false,
 };
 
 function getStoreFilePath(): string | null {
