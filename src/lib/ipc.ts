@@ -74,16 +74,9 @@ export function subscribe<T extends keyof IpcChannels>(
   });
 }
 
-// Get platform
-export function getPlatform(): NodeJS.Platform {
-  if (!isElectron) return 'darwin';
-  return window.electron.platform;
-}
-
 export const ipc = {
   invoke,
   send,
   subscribe,
   isElectron,
-  getPlatform,
 };
