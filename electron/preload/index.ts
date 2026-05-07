@@ -4,6 +4,9 @@ import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 // Increase max listeners to avoid warnings during development with HMR
 ipcRenderer.setMaxListeners(50);
 
+const platform = process.platform;
+const pushToTalkKeyLabel = platform === 'darwin' ? 'Right Option' : 'Right Alt';
+
 // Type-safe IPC bridge
 interface ElectronAPI {
   // Invoke (request-response pattern)
@@ -21,8 +24,8 @@ interface ElectronAPI {
   // Remove all listeners for a channel
   removeAllListeners(channel: string): void;
 
-  // Platform info
   platform: NodeJS.Platform;
+  pushToTalkKeyLabel: string;
 }
 
 const electronAPI: ElectronAPI = {
@@ -49,9 +52,9 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.removeAllListeners(channel);
   },
 
-  platform: process.platform,
+  platform,
+  pushToTalkKeyLabel,
 };
 
 // Expose to renderer
 contextBridge.exposeInMainWorld('electron', electronAPI);
-
