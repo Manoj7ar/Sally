@@ -301,3 +301,56 @@ Settings note: the current desktop UI surfaces a top-of-screen **macOS Permissio
 
 For a full repo health check, run `npm run check`.
 
+## Tech Stack
+
+| Layer | Technology | Role |
+|-------|-----------|------|
+| **AI Vision** | **Gemini 2.5 Flash** | Multimodal screen understanding |
+| **AI SDK** | **@google/genai** | Google Gen AI SDK for Node.js |
+| **Cloud** | *(none required)* | Gemini and ElevenLabs are called directly from the desktop app |
+| **Browser** | **Electron BrowserWindow + webContents** | Persistent Sally browser and DOM-first browser control |
+| **Desktop** | Electron + React + TypeScript | **macOS-only** host (vibrancy, screen-saver window level, NSStatusItem-grade dock menu, AppKit permission prompts) |
+| **Build** | Vite | Renderer bundling |
+| **STT** | **Gemini 2.5 Flash** | Speech-to-text transcription (`transcriptionService.ts`) |
+| **TTS** | ElevenLabs | Neural text-to-speech |
+| **Hotkey** | uiohook-napi | Global push-to-talk (**Right Option**) |
+
+## Repository Structure
+
+Current repo layout after cleanup:
+- `electron/` contains the Electron main process, preload bridge, and desktop orchestration.
+- `src/` contains the desktop renderer UI.
+- `shared/` contains cross-process TypeScript types.
+- `scripts/` contains repo-level verification helpers.
+- `assets/branding/` contains the shared Sally logo asset.
+- `config/macos/` contains the macOS packaging entitlements file.
+- `docs/architecture.md` contains the detailed architecture write-up.
+
+```text
+.
+├── electron/              # Electron main process
+│   └── main/
+│       ├── services/      # Transcription, TTS, Gemini, browser, screenshot services
+│       ├── managers/      # API keys, session management, microphone
+│       └── utils/         # Constants, store
+├── src/                   # Desktop renderer UI (React)
+│   └── windows/
+│       ├── config/        # Settings window
+│       ├── sallyBar/      # Floating assistant bar
+│       └── borderOverlay/ # Visual feedback overlay
+├── shared/                # Shared TypeScript types
+├── docs/                  # Architecture and supporting documentation
+│   └── architecture.md    # Detailed system architecture document
+└── README.md
+```
+
+## Accessibility Mission
+
+Sally exists because the web demands precise motor control such as clicking, scrolling, typing, dragging, that millions of people struggle with. Whether it's a permanent motor impairment like ALS or cerebral palsy, a temporary injury like a broken wrist, or chronic RSI from years of mouse use, the barrier is the same: the web requires hands that work perfectly.
+
+Sally removes that barrier entirely. One voice command replaces dozens of clicks. The goal is not convenience, it's **independence**.
+
+## Built By
+
+Built by [Manoj7ar](https://github.com/Manoj7ar) for the **Gemini Live Agent Challenge 2026**.
+
