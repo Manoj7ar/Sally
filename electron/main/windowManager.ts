@@ -1,7 +1,7 @@
 // Window management for Config, Sally Bar, and Border Overlay windows
 import { BrowserWindow, screen, app } from 'electron';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { BROWSER_WINDOW, CONFIG_WINDOW, SALLY_BAR } from './utils/constants.js';
 import { store, STORE_KEYS } from './utils/store.js';
 import type { OverlayHighlightPayload, SallyBarLayout } from '../../shared/types.js';
@@ -67,12 +67,12 @@ class WindowManager {
       return `${process.env.VITE_DEV_SERVER_URL}${separator}window=${windowType}`;
     }
     const indexPath = path.join(app.getAppPath(), 'dist', 'index.html');
-    return `file://${indexPath}?window=${windowType}`;
+    return `${pathToFileURL(indexPath).href}?window=${windowType}`;
   }
 
   showConfigWindow(): BrowserWindow {
     if (this.configWindow && !this.configWindow.isDestroyed()) {
-      if (process.platform === 'darwin' && !this.configWindow.isVisible()) {
+      if (!this.configWindow.isVisible()) {
         this.configWindow.destroy();
         this.configWindow = null;
       } else {
@@ -93,6 +93,7 @@ class WindowManager {
       minHeight: CONFIG_WINDOW.minHeight,
       titleBarStyle: 'hiddenInset',
       trafficLightPosition: { x: 16, y: 16 },
+      roundedCorners: true,
       fullscreenable: false,
       show: false,
       webPreferences: {
@@ -172,9 +173,16 @@ class WindowManager {
     this.attachWindowDiagnostics(this.sallyBarWindow, 'sallyBar');
 
     this.sallyBarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-
-    if (process.platform === 'darwin') {
-      this.sallyBarWindow.setAlwaysOnTop(true, 'screen-saver');
+    this.sallyBarWindow.setAlwaysOnTop(true, 'screen-saver');
+    // Hide the floating bar from screen recordings/QuickTime/screen-sharing
+    // (NSWindowSharingNone). Keeps API keys typed into the composer private.
+    this.sallyBarWindow.setContentProtection(true);
+    // Window buttons would be hidden anyway because of the frameless style,
+    // but make it explicit so the AppKit runtime never reserves space for them.
+    try {
+      this.sallyBarWindow.setWindowButtonVisibility(false);
+    } catch {
+      // Older macOS builds may not expose this on frameless windows; ignore.
     }
 
     this.sallyBarWindow.once('ready-to-show', () => {
@@ -211,7 +219,9 @@ class WindowManager {
       minWidth: BROWSER_WINDOW.minWidth,
       minHeight: BROWSER_WINDOW.minHeight,
       title: 'Sally Browser',
-      autoHideMenuBar: true,
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 14, y: 16 },
+      roundedCorners: true,
       show: false,
       backgroundColor: '#050505',
       webPreferences: {
@@ -289,10 +299,6 @@ class WindowManager {
 
     const isWaitingOverlay = this.getEffectiveOverlayState()?.mode === 'waiting';
     this.borderOverlayWindow.setIgnoreMouseEvents(!isWaitingOverlay);
-
-    if (process.platform !== 'darwin') {
-      this.borderOverlayWindow.setFocusable(isWaitingOverlay);
-    }
   }
 
   private ensureBorderOverlayWindow(bounds: { x: number; y: number; width: number; height: number }): void {
@@ -323,10 +329,10 @@ class WindowManager {
 
     this.borderOverlayWindow.setIgnoreMouseEvents(true);
     this.borderOverlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-
-    if (process.platform === 'darwin') {
-      this.borderOverlayWindow.setAlwaysOnTop(true, 'screen-saver');
-    }
+    this.borderOverlayWindow.setAlwaysOnTop(true, 'screen-saver');
+    // The "agent is working" border is for the user's eyes only; never leak
+    // it into screen recordings or screen-sharing sessions.
+    this.borderOverlayWindow.setContentProtection(true);
 
     this.borderOverlayWindow.loadURL(this.getRendererUrl('borderOverlay'));
     this.attachWindowDiagnostics(this.borderOverlayWindow, 'borderOverlay');
