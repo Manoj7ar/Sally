@@ -1,6 +1,7 @@
 import { windowManager } from '../windowManager.js';
 import { store, STORE_KEYS } from '../utils/store.js';
 import { sessionManager } from './sessionManager.js';
+import { refreshMacDockMenu } from '../macIntegration.js';
 
 class MicrophoneManager {
   isMuted(): boolean {
@@ -15,6 +16,8 @@ class MicrophoneManager {
     }
 
     windowManager.broadcastToAll('sally:mic-muted-changed', { muted });
+    // Keep the macOS dock context menu's mute label in sync.
+    refreshMacDockMenu();
     return muted;
   }
 }
